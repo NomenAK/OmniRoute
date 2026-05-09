@@ -151,7 +151,7 @@ test.describe("Skills marketplace", () => {
       await fulfillJson(route, { success: true });
     });
 
-    await page.route("**/api/skills", async (route) => {
+    await page.route(/\/api\/skills(?:\?.*)?$/, async (route) => {
       await fulfillJson(route, {
         data: state.skills,
         skills: state.skills,
