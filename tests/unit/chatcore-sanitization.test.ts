@@ -186,8 +186,10 @@ test("chatCore sanitization preserves max_output_tokens for openai-responses tar
   // the translator (which converts max_tokens back) is skipped for same-format.
   const { call } = await invokeChatCore({
     endpoint: "/v1/responses",
+    provider: "codex",
+    model: "gpt-5.4",
     body: {
-      model: "gpt-5.4",
+      model: "codex/gpt-5.4",
       max_output_tokens: 4096,
       input: [{ role: "user", content: "hello" }],
     },
@@ -213,8 +215,10 @@ test("chatCore sanitization preserves max_output_tokens for openai-responses tar
   // Reverse normalization: max_tokens → max_output_tokens for Responses targets
   const fromMaxTokens = await invokeChatCore({
     endpoint: "/v1/responses",
+    provider: "codex",
+    model: "gpt-5.4",
     body: {
-      model: "gpt-5.4",
+      model: "codex/gpt-5.4",
       max_tokens: 2048,
       input: [{ role: "user", content: "hello" }],
     },
@@ -239,8 +243,10 @@ test("chatCore sanitization preserves max_output_tokens for openai-responses tar
   // Reverse normalization: max_completion_tokens → max_output_tokens for Responses targets
   const fromMaxCompletion = await invokeChatCore({
     endpoint: "/v1/responses",
+    provider: "codex",
+    model: "gpt-5.4",
     body: {
-      model: "gpt-5.4",
+      model: "codex/gpt-5.4",
       max_completion_tokens: 8192,
       input: [{ role: "user", content: "hello" }],
     },
