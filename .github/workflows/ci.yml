@@ -101,6 +101,8 @@ jobs:
   advanced-security:
     name: Advanced Security Scans
     runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -129,10 +131,8 @@ jobs:
         run: npx is-my-node-vulnerable
 
       - name: Run Snyk Vulnerability checks
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && env.SNYK_TOKEN != ''
         uses: snyk/actions/node@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --severity-threshold=high
 

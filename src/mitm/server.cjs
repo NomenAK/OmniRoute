@@ -14,7 +14,17 @@ function getDataDir() {
 
 // Configuration
 const TARGET_HOST = "daily-cloudcode-pa.googleapis.com";
-const LOCAL_PORT = 443;
+function getLocalPort() {
+  const raw = process.env.MITM_LOCAL_PORT;
+  const trimmed = raw?.trim();
+  if (!trimmed || !/^\d+$/.test(trimmed)) return 443;
+
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) return 443;
+  return parsed;
+}
+
+const LOCAL_PORT = getLocalPort();
 const ROUTER_BASE_URL = (
   process.env.OMNIROUTE_BASE_URL ||
   process.env.BASE_URL ||

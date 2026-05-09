@@ -1,4 +1,4 @@
-name: Publish to Docker Hub
+name: Publish source image
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag to build (e.g. 2.6.0)"
-        required: true
+        description: "Version tag to build (e.g. 2.6.0). Defaults to package version + short SHA."
+        required: false
         type: string
 
 permissions:
@@ -19,27 +19,51 @@ permissions:
 
 jobs:
   docker:
-    name: Build and Push Docker (multi-arch)
-    runs-on: ubuntu-latest
-    env:
-      IMAGE_NAME: diegosouzapw/omniroute
+    name: Build and push source image (multi-arch)
+    runs-on: [self-hosted, nomenak]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Validate manual version input
+        id: manual-version
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        shell: bash
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          version="${VERSION_INPUT#v}"
+          if [[ ! "${version}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker image version tag: '${version}'" >&2
+            echo "Use 1-128 characters from [A-Za-z0-9_.-], starting with an alphanumeric or underscore." >&2
+            exit 1
+          fi
+
+          tag_ref="refs/tags/v${version}"
+          git fetch --force --depth=1 origin "${tag_ref}:${tag_ref}"
+          if ! git rev-parse --verify --quiet "${tag_ref}^{commit}" >/dev/null; then
+            echo "Manual version '${version}' requires matching git tag '${tag_ref}'." >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${version}"
+            echo "tag-ref=${tag_ref}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout manual version tag
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || '' }}
+          ref: ${{ steps.manual-version.outputs.tag-ref }}
 
       - name: Set up QEMU (for multi-arch builds)
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
@@ -48,30 +72,61 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from release tag or input
-        id: version
+      - name: Prepare image tags
+        id: meta
+        shell: bash
+        env:
+          VERSION_INPUT: ${{ inputs.version || '' }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+          set -euo pipefail
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/${owner}/omniroute"
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          elif [ -n "${VERSION_INPUT}" ]; then
+            version="${VERSION_INPUT}"
+            version="${version#v}"
           else
-            VERSION="${GITHUB_REF_NAME}"
-            VERSION="${VERSION#v}"
+            version="${package_version}-${short_sha}"
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Publishing Docker image: $IMAGE_NAME:$VERSION"
+
+          if [[ ! "${version}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker image version tag: '${version}'" >&2
+            echo "Use 1-128 characters from [A-Za-z0-9_.-], starting with an alphanumeric or underscore." >&2
+            exit 1
+          fi
+
+          tags=(
+            "${image}:${version}"
+            "${image}:sha-${short_sha}"
+          )
+
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            tags+=("${image}:main" "${image}:latest")
+          fi
+
+          {
+            echo "image=${image}"
+            echo "version=${version}"
+            echo "tags<<EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Publishing ${image}:${version}"
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v7
         with:
           context: .
-          target: runner-base
+          target: runner-cli
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE_NAME }}:latest
-            ghcr.io/diegosouzapw/omniroute:${{ steps.version.outputs.version }}
-            ghcr.io/diegosouzapw/omniroute:latest
+          tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           no-cache: false
@@ -80,13 +135,4 @@ jobs:
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect "${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
-
-      - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v5
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: diegosouzapw/omniroute
-          short-description: "OmniRoute — Unified AI proxy. Route any LLM through one endpoint."
-          readme-filepath: ./README.md
+          docker buildx imagetools inspect "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}"

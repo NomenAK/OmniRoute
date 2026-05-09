@@ -81,6 +81,7 @@ docs/*
 !docs/frontend-backend-provider-gap-report.md
 !docs/openapi.yaml
 !docs/RELEASE_CHECKLIST.md
+!docs/source-image.md
 !docs/PLANO-IMPLANTACAO.md
 !docs/TASKS.md
 !docs/FASE-*.md

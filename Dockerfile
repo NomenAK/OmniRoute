@@ -19,7 +19,7 @@ WORKDIR /app
 LABEL org.opencontainers.image.title="omniroute" \
   org.opencontainers.image.description="Unified AI proxy — route any LLM through one endpoint" \
   org.opencontainers.image.url="https://omniroute.online" \
-  org.opencontainers.image.source="https://github.com/diegosouzapw/OmniRoute" \
+  org.opencontainers.image.source="https://github.com/NomenAK/OmniRoute" \
   org.opencontainers.image.licenses="MIT"
 
 ENV NODE_ENV=production
@@ -65,4 +65,13 @@ RUN apt-get update \
   && git config --system url."https://github.com/".insteadOf "ssh://git@github.com/"
 
 # Install CLI tools globally. Separate layer from apt for better cache reuse.
-RUN npm install -g --no-audit --no-fund @openai/codex @anthropic-ai/claude-code droid openclaw@latest
+RUN npm install -g --no-audit --no-fund \
+  @openai/codex@0.130.0 \
+  @anthropic-ai/claude-code@2.1.138 \
+  droid@0.122.0 \
+  openclaw@2026.5.7 \
+  cline@2.18.0 \
+  @kilocode/cli@7.2.40 \
+  @qwen-code/qwen-code@0.15.9 \
+  @google/gemini-cli@0.41.2 \
+  && npm cache clean --force
