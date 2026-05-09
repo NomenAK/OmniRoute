@@ -208,12 +208,13 @@ export class AntigravityExecutor extends BaseExecutor {
           : body.request?.toolConfig,
     };
 
-    const isClaude = model.toLowerCase().includes("claude");
+    const normalizedModel = typeof model === "string" ? model : "";
+    const isClaude = normalizedModel.toLowerCase().includes("claude");
     const transformedRequest = isClaude
       ? sanitizeAntigravityGeminiRequest(rawTransformedRequest)
       : rawTransformedRequest;
 
-    const upstreamModel = cleanModelName(model);
+    const upstreamModel = cleanModelName(normalizedModel);
 
     // Obfuscate sensitive client names in user content (e.g. "OpenCode", "Cursor")
     const requestContents = transformedRequest.contents;

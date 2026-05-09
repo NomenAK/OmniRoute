@@ -183,6 +183,19 @@ test("AntigravityExecutor.transformRequest preserves non-Claude passthrough fiel
   assert.deepEqual(result.request.tools[0].cache_control, { type: "ephemeral" });
 });
 
+test("AntigravityExecutor.transformRequest tolerates nullish model values", async () => {
+  const executor = new AntigravityExecutor();
+  const result = await executor.transformRequest(
+    null,
+    { request: { contents: [{ role: "user", parts: [{ text: "Hello" }] }] } },
+    true,
+    { projectId: "project-1" }
+  );
+
+  assert.equal(result.model, "");
+  assert.deepEqual(result.request.contents, [{ role: "user", parts: [{ text: "Hello" }] }]);
+});
+
 test("AntigravityExecutor.transformRequest returns a structured error response when projectId is missing", async () => {
   const executor = new AntigravityExecutor();
   const result = await executor.transformRequest(
