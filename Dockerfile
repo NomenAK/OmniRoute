@@ -66,12 +66,12 @@ RUN apt-get update \
 
 # Install CLI tools globally. Separate layer from apt for better cache reuse.
 RUN npm install -g --no-audit --no-fund \
-  @openai/codex \
-  @anthropic-ai/claude-code \
-  droid \
-  openclaw@latest \
-  cline \
-  @kilocode/cli \
-  @qwen-code/qwen-code \
-  @google/gemini-cli \
+  @openai/codex@0.130.0 \
+  @anthropic-ai/claude-code@2.1.138 \
+  droid@0.122.0 \
+  openclaw@2026.5.7 \
+  cline@2.18.0 \
+  @kilocode/cli@7.2.40 \
+  @qwen-code/qwen-code@0.15.9 \
+  @google/gemini-cli@0.41.2 \
   && npm cache clean --force

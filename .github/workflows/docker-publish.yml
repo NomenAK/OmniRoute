@@ -60,6 +60,12 @@ jobs:
             version="${package_version}-${short_sha}"
           fi
 
+          if [[ ! "${version}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker image version tag: '${version}'" >&2
+            echo "Use 1-128 characters from [A-Za-z0-9_.-], starting with an alphanumeric or underscore." >&2
+            exit 1
+          fi
+
           tags=(
             "${image}:${version}"
             "${image}:sha-${short_sha}"
