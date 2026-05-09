@@ -16,9 +16,10 @@ function getDataDir() {
 const TARGET_HOST = "daily-cloudcode-pa.googleapis.com";
 function getLocalPort() {
   const raw = process.env.MITM_LOCAL_PORT;
-  if (!raw || !raw.trim()) return 443;
+  const trimmed = raw?.trim();
+  if (!trimmed || !/^\d+$/.test(trimmed)) return 443;
 
-  const parsed = Number(raw);
+  const parsed = Number(trimmed);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) return 443;
   return parsed;
 }

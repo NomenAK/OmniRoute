@@ -20,7 +20,7 @@ permissions:
 jobs:
   docker:
     name: Build and push source image (multi-arch)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nomenak]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
