@@ -80,6 +80,109 @@ test("AntigravityExecutor.transformRequest normalizes model, project and content
   assert.equal(result.request.contents[1].role, "user");
 });
 
+test("AntigravityExecutor.transformRequest sanitizes Claude Cloud Code requests", async () => {
+  const executor = new AntigravityExecutor();
+  const result = await executor.transformRequest(
+    "antigravity/claude-sonnet-4.5",
+    {
+      request: {
+        contents: [{ role: "user", parts: [{ text: "Hello from Cursor" }] }],
+        systemInstruction: { parts: [{ text: "Be concise" }] },
+        generationConfig: { maxOutputTokens: 1024 },
+        sessionId: "session-fixed",
+        messages: [{ role: "user", content: "leak" }],
+        max_tokens: 1024,
+        stream: true,
+        system: "leak",
+        tool_choice: { type: "tool", name: "read_file" },
+        temperature: 0.5,
+        tools: [
+          {
+            name: "read_file",
+            description: "Read a file",
+            input_schema: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+            },
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    },
+    true,
+    { projectId: "project-1" }
+  );
+
+  assert.deepEqual(Object.keys(result.request).sort(), [
+    "contents",
+    "generationConfig",
+    "sessionId",
+    "systemInstruction",
+    "toolConfig",
+    "tools",
+  ]);
+  assert.equal(result.request.sessionId, "session-fixed");
+  assert.equal(result.request.contents[0].parts[0].text, "Hello from C‍ursor");
+  assert.deepEqual(result.request.toolConfig, {
+    functionCallingConfig: { mode: "VALIDATED" },
+  });
+  assert.deepEqual(result.request.tools, [
+    {
+      functionDeclarations: [
+        {
+          name: "read_file",
+          description: "Read a file",
+          parameters: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
+        },
+      ],
+    },
+  ]);
+  assert.equal(JSON.stringify(result.request).includes("input_schema"), false);
+  assert.equal(JSON.stringify(result.request).includes("cache_control"), false);
+});
+
+test("AntigravityExecutor.transformRequest preserves non-Claude passthrough fields", async () => {
+  const executor = new AntigravityExecutor();
+  const result = await executor.transformRequest(
+    "antigravity/gemini-3-flash",
+    {
+      request: {
+        contents: [{ role: "user", parts: [{ text: "Hello" }] }],
+        messages: [{ role: "user", content: "preserve" }],
+        max_tokens: 1024,
+        stream: true,
+        system: "preserve",
+        tool_choice: { type: "auto" },
+        temperature: 0.5,
+        tools: [
+          {
+            name: "read_file",
+            description: "Read a file",
+            input_schema: { type: "object", properties: {} },
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    },
+    true,
+    { projectId: "project-1" }
+  );
+
+  assert.deepEqual(result.request.messages, [{ role: "user", content: "preserve" }]);
+  assert.equal(result.request.max_tokens, 1024);
+  assert.equal(result.request.stream, true);
+  assert.equal(result.request.system, "preserve");
+  assert.deepEqual(result.request.tool_choice, { type: "auto" });
+  assert.equal(result.request.temperature, 0.5);
+  assert.equal(result.request.tools[0].input_schema.type, "object");
+  assert.deepEqual(result.request.tools[0].cache_control, { type: "ephemeral" });
+});
+
 test("AntigravityExecutor.transformRequest returns a structured error response when projectId is missing", async () => {
   const executor = new AntigravityExecutor();
   const result = await executor.transformRequest(

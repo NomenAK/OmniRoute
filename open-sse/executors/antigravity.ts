@@ -10,6 +10,7 @@ import {
   handleCreditsFailure,
 } from "../services/antigravityCredits.ts";
 import { obfuscateSensitiveWords } from "../services/antigravityObfuscation.ts";
+import { buildGeminiTools } from "../translator/helpers/geminiToolsSanitizer.ts";
 
 const MAX_RETRY_AFTER_MS = 60_000;
 const LONG_RETRY_THRESHOLD_MS = 60_000;
@@ -68,6 +69,44 @@ function cleanModelName(model: string): string {
   if (BARE_PRO_IDS.has(clean)) {
     clean = `${clean}-low`;
   }
+  return clean;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function sanitizeAntigravityGeminiRequest(
+  request: Record<string, unknown>
+): Record<string, unknown> {
+  const clean: Record<string, unknown> = {};
+
+  if (Array.isArray(request.contents)) {
+    clean.contents = request.contents;
+  }
+
+  if (asRecord(request.systemInstruction)) {
+    clean.systemInstruction = request.systemInstruction;
+  }
+
+  clean.generationConfig = asRecord(request.generationConfig)
+    ? { ...(request.generationConfig as Record<string, unknown>) }
+    : {};
+
+  const geminiTools = buildGeminiTools(request.tools);
+  if (geminiTools) {
+    clean.tools = geminiTools;
+    clean.toolConfig = { functionCallingConfig: { mode: "VALIDATED" } };
+  } else if (asRecord(request.toolConfig)) {
+    clean.toolConfig = request.toolConfig;
+  }
+
+  if (typeof request.sessionId === "string") {
+    clean.sessionId = request.sessionId;
+  }
+
   return clean;
 }
 
@@ -158,7 +197,7 @@ export class AntigravityExecutor extends BaseExecutor {
       Array.isArray(c.parts) ? c.parts.length > 0 : true
     );
 
-    const transformedRequest = {
+    const rawTransformedRequest = {
       ...body.request,
       ...(contents.length > 0 && { contents }),
       sessionId: body.request?.sessionId || this.generateSessionId(),
@@ -168,6 +207,11 @@ export class AntigravityExecutor extends BaseExecutor {
           ? { functionCallingConfig: { mode: "VALIDATED" } }
           : body.request?.toolConfig,
     };
+
+    const isClaude = model.toLowerCase().includes("claude");
+    const transformedRequest = isClaude
+      ? sanitizeAntigravityGeminiRequest(rawTransformedRequest)
+      : rawTransformedRequest;
 
     const upstreamModel = cleanModelName(model);
 
