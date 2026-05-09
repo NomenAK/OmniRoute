@@ -152,7 +152,14 @@ test.describe("Skills marketplace", () => {
     });
 
     await page.route("**/api/skills", async (route) => {
-      await fulfillJson(route, { skills: state.skills });
+      await fulfillJson(route, {
+        data: state.skills,
+        skills: state.skills,
+        total: state.skills.length,
+        totalPages: 1,
+        page: 1,
+        limit: 20,
+      });
     });
 
     await gotoOrSkip(page, "/dashboard/skills");

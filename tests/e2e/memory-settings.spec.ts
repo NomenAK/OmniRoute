@@ -144,8 +144,14 @@ test.describe("Memory settings", () => {
 
     await page.route("**/api/memory", async (route) => {
       await fulfillJson(route, {
+        data: state.memories,
         memories: state.memories,
+        total: state.memories.length,
+        totalPages: 1,
+        page: 1,
+        limit: 20,
         stats: {
+          total: state.memories.length,
           totalEntries: state.memories.length,
           tokensUsed: state.memories.length * 24,
           hitRate: state.memories.length > 0 ? 0.75 : 0,
