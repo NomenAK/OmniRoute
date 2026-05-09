@@ -5,6 +5,7 @@ import { createChatPipelineHarness } from "../integration/_chatPipelineHarness.t
 
 const harness = await createChatPipelineHarness("chat-cooldown-aware-retry");
 const auth = await import("../../src/sse/services/auth.ts");
+const providersDb = await import("../../src/lib/db/providers.ts");
 const {
   BaseExecutor,
   buildOpenAIResponse,
@@ -14,6 +15,7 @@ const {
   seedConnection,
   settingsDb,
 } = harness;
+const originalRetryMaxAttempts = BaseExecutor.RETRY_CONFIG.maxAttempts;
 
 function buildRequestWithSignal(body, signal) {
   return new Request("http://localhost/v1/chat/completions", {
@@ -28,10 +30,12 @@ function buildRequestWithSignal(body, signal) {
 
 test.beforeEach(async () => {
   BaseExecutor.RETRY_CONFIG.delayMs = 0;
+  BaseExecutor.RETRY_CONFIG.maxAttempts = originalRetryMaxAttempts;
   await resetStorage();
 });
 
 test.afterEach(async () => {
+  BaseExecutor.RETRY_CONFIG.maxAttempts = originalRetryMaxAttempts;
   await resetStorage();
 });
 
@@ -77,18 +81,24 @@ test("handleChat waits for a short cooldown and retries once within the configur
 });
 
 test("handleChat recovers from a real 429 once the connection cooldown expires", async () => {
-  await seedConnection("openai", {
+  const connection = await seedConnection("openai", {
     apiKey: "sk-openai-live-429",
   });
+  BaseExecutor.RETRY_CONFIG.maxAttempts = 0;
   await settingsDb.updateSettings({
     requestRetry: 1,
     maxRetryIntervalSec: 2,
+    providerProfiles: {
+      apikey: {
+        rateLimitCooldown: 1000,
+      },
+    },
   });
 
   let fetchCalls = 0;
   globalThis.fetch = async () => {
     fetchCalls += 1;
-    if (fetchCalls <= 3) {
+    if (fetchCalls === 1) {
       return new Response(
         JSON.stringify({
           error: {
@@ -117,9 +127,12 @@ test("handleChat recovers from a real 429 once the connection cooldown expires",
   );
   const elapsedMs = Date.now() - startedAt;
   const body = await response.json();
+  const [updatedConnection] = await providersDb.getProviderConnections({ provider: "openai" });
 
   assert.equal(response.status, 200);
-  assert.equal(fetchCalls, 4);
+  assert.equal(fetchCalls, 2);
+  assert.equal(updatedConnection.id, connection.id);
+  assert.equal(updatedConnection.rateLimitedUntil, undefined);
   assert.ok(elapsedMs >= 900, `expected retry wait after 429, got ${elapsedMs}ms`);
   assert.equal(body.choices[0].message.content, "recovered after live 429");
 });
