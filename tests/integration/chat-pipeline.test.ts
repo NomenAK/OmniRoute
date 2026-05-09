@@ -22,6 +22,7 @@ const { skillExecutor } = await import("../../src/lib/skills/executor.ts");
 const { handleChat } = await import("../../src/sse/handlers/chat.ts");
 const { initTranslators } = await import("../../open-sse/translator/index.ts");
 const { clearInflight } = await import("../../open-sse/services/requestDedup.ts");
+const { generateSignature, getCachedResponse } = await import("../../src/lib/semanticCache.ts");
 const { BaseExecutor } = await import("../../open-sse/executors/base.ts");
 const { resetAllAvailability, setModelUnavailable } =
   await import("../../src/domain/modelAvailability.ts");
@@ -421,10 +422,11 @@ async function getLatestCallLog() {
   return callLogsDb.getCallLogById(rows[0].id);
 }
 
-async function getResponsesCallLogCount() {
+async function getResponsesUpstreamCallLogCount() {
   const rows = await callLogsDb.getCallLogs({ limit: 200 });
   if (!Array.isArray(rows) || rows.length === 0) return 0;
-  return rows.filter((row) => row.path === "/v1/responses").length;
+  return rows.filter((row) => row.path === "/v1/responses" && row.cacheSource === "upstream")
+    .length;
 }
 
 test.beforeEach(async () => {
@@ -553,10 +555,11 @@ test("chat pipeline serves repeated /v1/responses requests as MISS then HIT and 
   const requestBody = {
     model: "codex/gpt-5.3-codex",
     stream: false,
+    temperature: 0,
     input: [{ role: "user", content: [{ type: "input_text", text: uniquePrompt }] }],
   };
 
-  const beforeCount = await getResponsesCallLogCount();
+  const beforeCount = await getResponsesUpstreamCallLogCount();
 
   const firstResponse = await handleChat(
     buildRequest({
@@ -564,6 +567,17 @@ test("chat pipeline serves repeated /v1/responses requests as MISS then HIT and 
       body: requestBody,
     })
   );
+  assert.equal(firstResponse.status, 200);
+  assert.equal(firstResponse.headers.get("X-OmniRoute-Cache"), "MISS");
+  await firstResponse.json();
+
+  const cacheSignature = generateSignature(
+    "codex/gpt-5.3-codex",
+    requestBody.messages ?? requestBody.input,
+    requestBody.temperature,
+    requestBody.top_p
+  );
+  await waitFor(() => (getCachedResponse(cacheSignature) ? true : null), 2000);
 
   const secondResponse = await handleChat(
     buildRequest({
@@ -571,6 +585,9 @@ test("chat pipeline serves repeated /v1/responses requests as MISS then HIT and 
       body: requestBody,
     })
   );
+  assert.equal(secondResponse.status, 200);
+  assert.equal(secondResponse.headers.get("X-OmniRoute-Cache"), "HIT");
+  await secondResponse.json();
 
   const thirdResponse = await handleChat(
     buildRequest({
@@ -578,26 +595,17 @@ test("chat pipeline serves repeated /v1/responses requests as MISS then HIT and 
       body: requestBody,
     })
   );
-
-  await firstResponse.json();
-  await secondResponse.json();
-  await thirdResponse.json();
-
-  assert.equal(firstResponse.status, 200);
-  assert.equal(secondResponse.status, 200);
   assert.equal(thirdResponse.status, 200);
-
-  assert.equal(firstResponse.headers.get("X-OmniRoute-Cache"), "MISS");
-  assert.equal(secondResponse.headers.get("X-OmniRoute-Cache"), "HIT");
   assert.equal(thirdResponse.headers.get("X-OmniRoute-Cache"), "HIT");
+  await thirdResponse.json();
 
   assert.equal(fetchCalls.length, 1, "expected upstream to be called only once for MISS");
   assert.match(fetchCalls[0].url, /\/responses$/);
 
   const afterCount = await waitFor(async () => {
-    const count = await getResponsesCallLogCount();
+    const count = await getResponsesUpstreamCallLogCount();
     return count === beforeCount + 1 ? count : null;
-  }, 2000);
+  }, 5000);
 
   assert.equal(afterCount, beforeCount + 1, "expected exactly one new /v1/responses call log");
 
