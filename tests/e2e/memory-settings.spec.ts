@@ -142,7 +142,7 @@ test.describe("Memory settings", () => {
       await fulfillJson(route, { error: "Method not allowed in memory settings stub" }, 405);
     });
 
-    await page.route("**/api/memory", async (route) => {
+    await page.route(/\/api\/memory(?:\?.*)?$/, async (route) => {
       await fulfillJson(route, {
         data: state.memories,
         memories: state.memories,
