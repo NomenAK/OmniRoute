@@ -25,6 +25,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Validate manual version input
+        id: manual-version
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        shell: bash
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          version="${VERSION_INPUT#v}"
+          if [[ ! "${version}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker image version tag: '${version}'" >&2
+            echo "Use 1-128 characters from [A-Za-z0-9_.-], starting with an alphanumeric or underscore." >&2
+            exit 1
+          fi
+
+          tag_ref="refs/tags/v${version}"
+          git fetch --force --depth=1 origin "${tag_ref}:${tag_ref}"
+          if ! git rev-parse --verify --quiet "${tag_ref}^{commit}" >/dev/null; then
+            echo "Manual version '${version}' requires matching git tag '${tag_ref}'." >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${version}"
+            echo "tag-ref=${tag_ref}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout manual version tag
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.manual-version.outputs.tag-ref }}
+
       - name: Set up QEMU (for multi-arch builds)
         uses: docker/setup-qemu-action@v4
 
@@ -48,7 +82,7 @@ jobs:
 
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           image="ghcr.io/${owner}/omniroute"
-          short_sha="${GITHUB_SHA::12}"
+          short_sha="$(git rev-parse --short=12 HEAD)"
           package_version="$(node -p "require('./package.json').version")"
 
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
