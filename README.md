@@ -2269,6 +2269,7 @@ Se não quiser criar credenciais próprias agora, ainda é possível usar o flux
 | [VM Deployment](docs/VM_DEPLOYMENT_GUIDE.md)             | Complete guide: VM + nginx + Cloudflare setup       |
 | [Features Gallery](docs/FEATURES.md)                     | Visual dashboard tour with screenshots              |
 | [Release Checklist](docs/RELEASE_CHECKLIST.md)           | Pre-release validation steps                        |
+| [Source Image Producer](docs/source-image.md)            | GHCR image publishing and runtime split contract    |
 
 ---
 
