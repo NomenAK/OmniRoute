@@ -20,7 +20,7 @@ permissions:
 jobs:
   docker:
     name: Build and push source image (multi-arch)
-    runs-on: [self-hosted, nomenak]
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     steps:
       - name: Checkout
         uses: actions/checkout@v6

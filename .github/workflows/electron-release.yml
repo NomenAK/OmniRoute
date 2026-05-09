@@ -16,10 +16,15 @@ permissions:
   id-token: write
   packages: write
 
+env:
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
 jobs:
   validate:
     name: Validate version
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     outputs:
       version: ${{ steps.validate.outputs.version }}
     steps:
@@ -65,7 +70,7 @@ jobs:
             target: mac-arm64
             ext: -arm64.dmg
           - platform: linux
-            runner: ubuntu-latest
+            runner: [self-hosted, Linux, X64, nomenak, omniroute, p330]
             target: linux
             ext: .AppImage
             deb_ext: .deb
@@ -156,7 +161,7 @@ jobs:
   release:
     name: Create Release
     needs: [validate, build]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     steps:
       - name: Checkout
         uses: actions/checkout@v6

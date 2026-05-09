@@ -16,11 +16,14 @@ permissions:
 
 env:
   CI_NODE_VERSION: "22.22.2"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -39,7 +42,7 @@ jobs:
 
   i18n-matrix:
     name: Build language matrix
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     outputs:
       langs: ${{ steps.langs.outputs.langs }}
     steps:
@@ -52,7 +55,7 @@ jobs:
 
   i18n:
     name: i18n Validation
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -79,7 +82,7 @@ jobs:
   pr-test-policy:
     name: PR Test Policy
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -100,7 +103,7 @@ jobs:
 
   advanced-security:
     name: Advanced Security Scans
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
@@ -138,7 +141,7 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -151,7 +154,7 @@ jobs:
 
   package-artifact:
     name: Package Artifact
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     needs: build
     env:
       JWT_SECRET: ci-build-secret-with-sufficient-length-for-validation
@@ -168,7 +171,7 @@ jobs:
 
   test-unit:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     timeout-minutes: 15
     needs: build
     env:
@@ -187,7 +190,7 @@ jobs:
 
   test-coverage:
     name: Coverage
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     timeout-minutes: 15
     needs: build
     env:
@@ -234,7 +237,7 @@ jobs:
 
   sonarqube:
     name: SonarQube
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     needs: test-coverage
     if: ${{ always() && needs.test-coverage.result == 'success' }}
     env:
@@ -261,7 +264,7 @@ jobs:
 
   coverage-pr-comment:
     name: PR Coverage Comment
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false }}
     needs:
       - pr-test-policy
@@ -339,7 +342,7 @@ jobs:
 
   test-e2e:
     name: E2E Tests (${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     timeout-minutes: 15
     needs: build
     strategy:
@@ -364,7 +367,7 @@ jobs:
 
   test-integration:
     name: Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     timeout-minutes: 10
     needs: build
     env:
@@ -385,7 +388,7 @@ jobs:
 
   test-security:
     name: Security Tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     needs: build
     env:
       JWT_SECRET: ci-test-secret-with-sufficient-length-for-validation
@@ -403,7 +406,7 @@ jobs:
 
   ci-summary:
     name: CI Dashboard
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, nomenak, omniroute, p330]
     if: always()
     needs:
       - lint
