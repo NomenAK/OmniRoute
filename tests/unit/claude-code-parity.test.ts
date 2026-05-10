@@ -23,7 +23,10 @@ import {
 } from "../../open-sse/services/claudeCodeFingerprint.ts";
 
 // ── Tool remapper ─────────────────────────────────────────────────────────────
-import { remapToolNamesInRequest } from "../../open-sse/services/claudeCodeToolRemapper.ts";
+import {
+  remapToolNamesInRequest,
+  stripClaudeCodeInternalMarkers,
+} from "../../open-sse/services/claudeCodeToolRemapper.ts";
 
 // ── Constraints ───────────────────────────────────────────────────────────────
 import {
@@ -159,10 +162,73 @@ describe("remapToolNamesInRequest", () => {
       messages: [],
     };
     remapToolNamesInRequest(body);
-    // Should remap known tools (e.g. bash → Bash); unknown tools pass through
-    // The exact mapping depends on the tool registry — test that function doesn't throw
-    // and that tools array is still present
-    assert.ok(Array.isArray(body.tools), "tools array must still be present after remap");
+    assert.equal(body.tools[0].name, "Bash");
+    assert.equal(body.tools[1].name, "read_file");
+  });
+
+  it("strips internal markers while remapping lowercase tools, tool_use, and tool_choice", () => {
+    const body = {
+      _claudeCodeRequiresLowercaseToolNames: true,
+      _claudeCodePrivateMarker: "internal",
+      _otherMarker: "preserved",
+      tools: [
+        { name: "bash", description: "Run bash commands" },
+        { name: "read", description: "Read a file" },
+      ],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_1", name: "grep", input: {} }],
+        },
+      ],
+      tool_choice: { type: "tool", name: "write" },
+    };
+
+    const shouldLowercaseResponse = remapToolNamesInRequest(body);
+
+    assert.equal(shouldLowercaseResponse, true);
+    assert.equal(Object.hasOwn(body, "_claudeCodeRequiresLowercaseToolNames"), false);
+    assert.equal(Object.hasOwn(body, "_claudeCodePrivateMarker"), false);
+    assert.equal(body._otherMarker, "preserved");
+    assert.equal(body.tools[0].name, "Bash");
+    assert.equal(body.tools[1].name, "Read");
+    assert.equal(body.messages[0].content[0].name, "Grep");
+    assert.equal(body.tool_choice.name, "Write");
+  });
+
+  it("strips internal markers without changing TitleCase remap return semantics", () => {
+    const body = {
+      _claudeCodeRequiresLowercaseToolNames: true,
+      tools: [{ name: "Bash", description: "Run bash commands" }],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: {} }],
+        },
+      ],
+      tool_choice: { type: "tool", name: "Write" },
+    };
+
+    const shouldLowercaseResponse = remapToolNamesInRequest(body);
+
+    assert.equal(shouldLowercaseResponse, false);
+    assert.equal(Object.hasOwn(body, "_claudeCodeRequiresLowercaseToolNames"), false);
+    assert.equal(body.tools[0].name, "Bash");
+    assert.equal(body.messages[0].content[0].name, "Read");
+    assert.equal(body.tool_choice.name, "Write");
+  });
+
+  it("stripClaudeCodeInternalMarkers removes only top-level _claudeCode keys", () => {
+    const body = {
+      _claudeCodeA: true,
+      nested: { _claudeCodeB: true },
+      messages: [{ role: "user", content: "hello" }],
+    };
+
+    stripClaudeCodeInternalMarkers(body);
+
+    assert.equal(Object.hasOwn(body, "_claudeCodeA"), false);
+    assert.deepEqual(body.nested, { _claudeCodeB: true });
   });
 
   it("handles body without tools without throwing", () => {

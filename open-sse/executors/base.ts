@@ -10,7 +10,10 @@ import {
   modelSupportsContext1mBeta,
 } from "../services/claudeCodeCompatible.ts";
 import { getClaudeCodeCompatibleRequestDefaults } from "@/lib/providers/requestDefaults";
-import { remapToolNamesInRequest } from "../services/claudeCodeToolRemapper.ts";
+import {
+  remapToolNamesInRequest,
+  stripClaudeCodeInternalMarkers,
+} from "../services/claudeCodeToolRemapper.ts";
 import { obfuscateInBody } from "../services/claudeCodeObfuscation.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -534,6 +537,7 @@ export class BaseExecutor {
           stripProxyToolPrefix(tb);
           remapToolNamesInRequest(tb);
           obfuscateInBody(tb);
+          stripClaudeCodeInternalMarkers(tb);
 
           // Real CLI never sets cache_control on tools.
           if (Array.isArray(tb.tools)) {

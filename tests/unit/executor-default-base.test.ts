@@ -628,6 +628,63 @@ test("DefaultExecutor.execute only injects adaptive thinking defaults for Claude
   assert.equal((requestBodies[1] as any).output_config, undefined);
 });
 
+test('DefaultExecutor("claude").execute serializes TitleCase tools without internal markers for OAuth', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody = "";
+
+  globalThis.fetch = async (_url, init = {}) => {
+    requestBody = String(init.body);
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const claude = new DefaultExecutor("claude");
+    await claude.execute({
+      model: "claude-sonnet-4-6",
+      body: {
+        model: "claude-sonnet-4-6",
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "toolu_1", name: "grep", input: {} }],
+          },
+          { role: "user", content: "hi" },
+        ],
+        tools: [
+          { name: "bash", description: "Run bash commands", input_schema: { type: "object" } },
+          { name: "read", description: "Read a file", input_schema: { type: "object" } },
+        ],
+        tool_choice: { type: "tool", name: "write" },
+        _claudeCodeRequiresLowercaseToolNames: true,
+        _claudeCodePrivateMarker: "internal",
+        max_tokens: 1,
+      },
+      stream: false,
+      credentials: {
+        accessToken: "sk-ant-oat-test-token",
+        providerSpecificData: { ccSessionId: "session-1" },
+      },
+      extendedContext: false,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.ok(requestBody, "request body should be serialized");
+  assert.equal(requestBody.includes("_claudeCode"), false);
+  assert.equal(requestBody.includes('"name":"Bash"'), true);
+  assert.equal(requestBody.includes('"name":"Read"'), true);
+  assert.equal(requestBody.includes('"name":"Grep"'), true);
+  assert.equal(requestBody.includes('"name":"Write"'), true);
+  assert.equal(requestBody.includes('"name":"bash"'), false);
+  assert.equal(requestBody.includes('"name":"read"'), false);
+  assert.equal(requestBody.includes('"name":"grep"'), false);
+  assert.equal(requestBody.includes('"name":"write"'), false);
+});
+
 test("DefaultExecutor.transformRequest injects OpenAI stream usage and preserves model ids with slashes", () => {
   const executor = new DefaultExecutor("openai");
   const body = { model: "zai-org/GLM-5-FP8", messages: [{ role: "user", content: "hi" }] };
