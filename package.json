@@ -100,6 +100,7 @@
     "coverage:report": "c8 report --output-dir coverage --exclude=tests/** --exclude=**/*.test.* --reporter=text --reporter=text-summary --reporter=html --reporter=json-summary --reporter=lcov",
     "coverage:summary": "node scripts/test-report-summary.mjs --input coverage/coverage-summary.json --output coverage/coverage-report.md --threshold 60",
     "check:pr-test-policy": "node scripts/check-pr-test-policy.mjs",
+    "check:pre-push": "node scripts/pre-push-check.mjs",
     "coverage:report:legacy": "c8 report --output-dir coverage --exclude=open-sse --reporter=text --reporter=text-summary",
     "test:all": "npm run test:unit && npm run test:vitest && npm run test:ecosystem && npm run test:e2e",
     "check": "npm run lint && npm run test",

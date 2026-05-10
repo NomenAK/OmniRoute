@@ -5,4 +5,4 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 0
 fi
 
-npm run test:unit
+node scripts/pre-push-check.mjs
