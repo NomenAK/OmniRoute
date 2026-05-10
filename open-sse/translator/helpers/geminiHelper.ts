@@ -88,14 +88,32 @@ export const DEFAULT_SAFETY_SETTINGS = [
   { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
 ];
 
+type GeminiPart = Record<string, unknown>;
+
+type OpenAIContentBlock = Record<string, unknown> & {
+  type?: string;
+  text?: unknown;
+  inline_data?: Record<string, unknown>;
+  inlineData?: Record<string, unknown>;
+  source?: Record<string, unknown>;
+  data?: unknown;
+  mime_type?: unknown;
+  media_type?: unknown;
+  image_url?: Record<string, unknown>;
+  file_url?: Record<string, unknown>;
+  file?: Record<string, unknown>;
+  document?: Record<string, unknown>;
+};
+
 // Convert OpenAI content to Gemini parts
-export function convertOpenAIContentToParts(content: any) {
-  const parts: any[] = [];
+export function convertOpenAIContentToParts(content: unknown): GeminiPart[] {
+  const parts: GeminiPart[] = [];
 
   if (typeof content === "string") {
     parts.push({ text: content });
   } else if (Array.isArray(content)) {
-    for (const item of content) {
+    for (const rawItem of content) {
+      const item = toRecord(rawItem) as OpenAIContentBlock;
       if (item.type === "text") {
         parts.push({ text: item.text });
       } else {

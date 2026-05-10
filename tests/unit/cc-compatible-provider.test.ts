@@ -779,6 +779,155 @@ test("handleChatCore preserves client cache markers for Claude Code requests to 
   });
 });
 
+test("handleChatCore uses Claude Code wire image for native Claude OAuth from OpenAI chat", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({
+      url: String(url),
+      method: init.method || "GET",
+      headers: init.headers,
+      body: init.body ? JSON.parse(String(init.body)) : null,
+      rawBody: String(init.body || ""),
+    });
+
+    return new Response(
+      [
+        "event: message_start",
+        'data: {"type":"message_start","message":{"id":"msg_native_openai","type":"message","role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":8,"output_tokens":0}}}',
+        "",
+        "event: content_block_delta",
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Native OpenAI OK"}}',
+        "",
+        "event: message_delta",
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}',
+        "",
+        "event: message_stop",
+        'data: {"type":"message_stop"}',
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    );
+  };
+
+  const result = await handleChatCore({
+    body: {
+      model: "claude-opus-4-7",
+      messages: [{ role: "user", content: "Ping" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "bash",
+            description: "Run bash",
+            parameters: { type: "object", properties: { command: { type: "string" } } },
+          },
+        },
+      ],
+      reasoning_effort: "high",
+      stream: false,
+    },
+    modelInfo: { provider: "claude", model: "claude-opus-4-7", extendedContext: false },
+    credentials: { accessToken: "sk-ant-oat-native-openai" },
+    clientRawRequest: {
+      endpoint: "/v1/chat/completions",
+      body: { model: "claude/claude-opus-4-7", messages: [{ role: "user", content: "Ping" }] },
+      headers: new Headers({ accept: "application/json" }),
+    },
+    userAgent: "unit-test",
+    log: { debug() {}, info() {}, warn() {}, error() {} },
+  });
+
+  assert.equal(result.success, true);
+  const upstreamCall = calls.find((call) => call.url.includes("/v1/messages"));
+  assert.ok(upstreamCall, "expected an upstream /v1/messages call");
+  assert.equal(upstreamCall.url, "https://api.anthropic.com/v1/messages?beta=true");
+  assert.equal(upstreamCall.headers.Accept, "application/json");
+  assert.equal(upstreamCall.headers["x-app"], "cli");
+  assert.match(upstreamCall.headers["User-Agent"], /^claude-cli\//);
+  assert.ok(upstreamCall.headers["X-Claude-Code-Session-Id"]);
+  assert.match(upstreamCall.headers["anthropic-beta"], /claude-code-20250219/);
+  assert.equal(upstreamCall.body.stream, true);
+  assert.match(upstreamCall.body.system[0].text, /^x-anthropic-billing-header:/);
+  assert.match(upstreamCall.body.system[1].text, /Claude Code/);
+  assert.equal(typeof upstreamCall.body.metadata.user_id, "string");
+  assert.equal(upstreamCall.body.tools[0].name, "Bash");
+  assert.equal(upstreamCall.rawBody.includes("reasoning_effort"), false);
+  assert.equal(upstreamCall.rawBody.includes("_claudeCode"), false);
+});
+
+test("handleChatCore uses Claude Code wire image for native Claude OAuth from /v1/messages", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({
+      url: String(url),
+      headers: init.headers,
+      body: init.body ? JSON.parse(String(init.body)) : null,
+      rawBody: String(init.body || ""),
+    });
+
+    return new Response(
+      [
+        "event: message_start",
+        'data: {"type":"message_start","message":{"id":"msg_native_messages","type":"message","role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":0}}}',
+        "",
+        "event: content_block_delta",
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Native Messages OK"}}',
+        "",
+        "event: message_delta",
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}',
+        "",
+        "event: message_stop",
+        'data: {"type":"message_stop"}',
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    );
+  };
+
+  const claudeBody = {
+    model: "claude-opus-4-7",
+    max_tokens: 128,
+    system: [{ type: "text", text: "system", cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: [{ type: "text", text: "Ping" }] }],
+    tools: Array.from({ length: 51 }, (_, index) => ({
+      name: `tool_${index}`,
+      description: "tool",
+      input_schema: { type: "object", properties: {} },
+      cache_control: { type: "ephemeral" },
+    })),
+    metadata: { user_id: "client-supplied" },
+    stream: false,
+  };
+
+  const result = await handleChatCore({
+    body: claudeBody,
+    modelInfo: { provider: "claude", model: "claude-opus-4-7", extendedContext: false },
+    credentials: { accessToken: "sk-ant-oat-native-messages" },
+    clientRawRequest: {
+      endpoint: "/v1/messages",
+      body: claudeBody,
+      headers: new Headers({ accept: "application/json" }),
+    },
+    userAgent: "unit-test",
+    log: { debug() {}, info() {}, warn() {}, error() {} },
+  });
+
+  assert.equal(result.success, true);
+  const upstreamCall = calls.find((call) => call.url.includes("/v1/messages"));
+  assert.ok(upstreamCall, "expected an upstream /v1/messages call");
+  assert.equal(upstreamCall.headers.Accept, "application/json");
+  assert.equal(upstreamCall.headers["x-app"], "cli");
+  assert.match(upstreamCall.headers["User-Agent"], /^claude-cli\//);
+  assert.match(upstreamCall.headers["anthropic-beta"], /claude-code-20250219/);
+  assert.equal(upstreamCall.body.stream, true);
+  assert.match(upstreamCall.body.system[0].text, /^x-anthropic-billing-header:/);
+  assert.match(upstreamCall.body.system[1].text, /Claude Code/);
+  assert.notEqual(upstreamCall.body.metadata.user_id, "client-supplied");
+  assert.equal(upstreamCall.body.tools.length, 51);
+  assert.equal(upstreamCall.body.tools[0].cache_control, undefined);
+  assert.equal(upstreamCall.rawBody.includes("_claudeCode"), false);
+});
+
 test("provider-nodes create route rejects CC mode when feature flag is disabled", async () => {
   delete process.env.ENABLE_CC_COMPATIBLE_PROVIDER;
 

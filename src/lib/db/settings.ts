@@ -272,7 +272,7 @@ export async function getPricingWithSources(): Promise<{
 export async function getPricingForModel(provider: string, model: string) {
   const pricing = await getPricing();
 
-  const findKeyInsensitive = (obj: Record<string, any> | undefined | null, key: string) => {
+  const findKeyInsensitive = (obj: Record<string, unknown> | undefined | null, key: string) => {
     if (!obj || !key) return undefined;
     const lowerKey = key.toLowerCase();
     for (const [k, v] of Object.entries(obj)) {

@@ -28,6 +28,7 @@ import {
   hasPerModelQuota,
   getRuntimeProviderProfile,
   recordModelLockoutFailure,
+  isClaudeExtraUsageExhausted,
 } from "@omniroute/open-sse/services/accountFallback.ts";
 import { isLocalProvider } from "@omniroute/open-sse/config/providerRegistry.ts";
 import { COOLDOWN_MS } from "@omniroute/open-sse/config/constants.ts";
@@ -1480,6 +1481,23 @@ export async function markAccountUnavailable(
     const result = fallbackResult;
     const { shouldFallback, cooldownMs: rawCooldownMs, newBackoffLevel, reason } = result;
     if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
+
+    const errorMsg = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
+    if (provider && model && isClaudeExtraUsageExhausted(status, errorText, provider)) {
+      await updateProviderConnection(connectionId, {
+        lastErrorType: "extra_usage",
+        lastError: errorMsg,
+        lastErrorAt: new Date().toISOString(),
+        errorCode: status,
+        backoffLevel: newBackoffLevel ?? backoffLevel,
+      });
+      log.info(
+        "AUTH",
+        `Claude OAuth extra_usage observed for ${provider}:${model} — preserving account state`
+      );
+      return { shouldFallback: true, cooldownMs: 0 };
+    }
+
     const providerErrorType = classifyProviderError(status, errorText, provider);
 
     if (provider && resolveProviderId(provider) === "grok-web" && status === 403 && model) {
@@ -1544,8 +1562,6 @@ export async function markAccountUnavailable(
       );
       return { shouldFallback: true, cooldownMs: lockout.cooldownMs };
     }
-
-    const errorMsg = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
 
     // T09: Codex per-scope lockout (do not block the whole account globally).
     if (provider === "codex" && status === 429 && model && conn) {
