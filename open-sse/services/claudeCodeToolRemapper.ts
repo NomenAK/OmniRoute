@@ -38,7 +38,17 @@ for (const [k, v] of Object.entries(TOOL_RENAME_MAP)) {
   REVERSE_MAP[v] = k;
 }
 
+export function stripClaudeCodeInternalMarkers(body: Record<string, unknown>): void {
+  for (const key of Object.keys(body)) {
+    if (key.startsWith("_claudeCode")) {
+      delete body[key];
+    }
+  }
+}
+
 export function remapToolNamesInRequest(body: Record<string, unknown>): boolean {
+  stripClaudeCodeInternalMarkers(body);
+
   let hasLowercase = false;
   let hasTitleCase = false;
 
@@ -86,10 +96,6 @@ export function remapToolNamesInRequest(body: Record<string, unknown>): boolean 
     } else if (REVERSE_MAP[toolChoice.name]) {
       hasTitleCase = true;
     }
-  }
-
-  if (hasLowercase && !hasTitleCase) {
-    body._claudeCodeRequiresLowercaseToolNames = true;
   }
 
   return hasLowercase && !hasTitleCase;
