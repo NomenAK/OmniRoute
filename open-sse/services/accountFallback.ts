@@ -54,6 +54,16 @@ type ModelFailureState = {
   resetAfterMs: number;
 };
 
+type ModelLockoutInfo = {
+  provider: string;
+  connectionId: string;
+  model: string;
+  reason: string;
+  remainingMs: number;
+  lockedAt: string;
+  failureCount: number;
+};
+
 // Provider-level failure tracking for circuit breaker behavior
 // Error codes that count toward provider-level failure threshold
 // 429 (rate limit) is intentionally excluded: rate limits are connection-scoped
@@ -94,6 +104,8 @@ export const CREDITS_EXHAUSTED_SIGNALS = [
   "out of credits",
   "payment required",
 ];
+
+export const CLAUDE_EXTRA_USAGE_EXHAUSTED_SIGNALS = ["out of extra usage", "extra usage"];
 
 // T11: Signals that indicate OAuth token is invalid/expired (not permanent deactivation)
 export const OAUTH_INVALID_TOKEN_SIGNALS = [
@@ -147,6 +159,16 @@ export function isAccountDeactivated(errorText: string): boolean {
 export function isCreditsExhausted(errorText: string): boolean {
   const lower = String(errorText || "").toLowerCase();
   return CREDITS_EXHAUSTED_SIGNALS.some((sig) => lower.includes(sig));
+}
+
+export function isClaudeExtraUsageExhausted(
+  status: number,
+  errorText: string | null | undefined,
+  provider: string | null | undefined
+): boolean {
+  if (status !== HTTP_STATUS.BAD_REQUEST || provider !== "claude") return false;
+  const lower = String(errorText || "").toLowerCase();
+  return CLAUDE_EXTRA_USAGE_EXHAUSTED_SIGNALS.some((sig) => lower.includes(sig));
 }
 
 /**
@@ -493,7 +515,7 @@ export function getModelLockoutInfo(provider, connectionId, model) {
  */
 export function getAllModelLockouts() {
   const now = Date.now();
-  const active: any[] = [];
+  const active: ModelLockoutInfo[] = [];
   for (const key of modelLockouts.keys()) {
     cleanupModelLockKey(key, now);
   }
@@ -887,7 +909,7 @@ export function checkFallbackError(
   backoffLevel: number = 0,
   _model: string | null = null,
   provider: string | null = null,
-  headers: any = null,
+  headers: Headers | Record<string, string | undefined> | null = null,
   profileOverride: ProviderProfile | null = null
 ): {
   shouldFallback: boolean;
@@ -1010,6 +1032,15 @@ export function checkFallbackError(
         cooldownMs: 365 * 24 * 60 * 60 * 1000, // 1 year = effectively permanent
         reason: RateLimitReason.AUTH_ERROR,
         permanent: true,
+      };
+    }
+
+    if (isClaudeExtraUsageExhausted(status, errorStr, provider)) {
+      return {
+        shouldFallback: true,
+        cooldownMs: 0,
+        reason: RateLimitReason.QUOTA_EXHAUSTED,
+        creditsExhausted: true,
       };
     }
 

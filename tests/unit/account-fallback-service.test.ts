@@ -144,9 +144,37 @@ test("checkFallbackError honors x-ratelimit-reset for transient 5xx errors", () 
   });
 });
 
+test("checkFallbackError classifies Claude OAuth extra-usage 400 as quota fallback", () => {
+  const result = checkFallbackError(
+    400,
+    "[400]: You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+    0,
+    "claude-opus-4-7",
+    "claude"
+  );
+
+  assert.equal(result.shouldFallback, true);
+  assert.equal(result.reason, RateLimitReason.QUOTA_EXHAUSTED);
+  assert.equal(result.creditsExhausted, true);
+  assert.equal(result.cooldownMs, 0);
+});
+
 test("checkFallbackError keeps generic 400 client errors terminal", () => {
   const result = checkFallbackError(400, "bad request payload");
   assert.deepEqual(result, {
+    shouldFallback: false,
+    cooldownMs: 0,
+    reason: RateLimitReason.UNKNOWN,
+  });
+
+  const nonClaude = checkFallbackError(
+    400,
+    "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+    0,
+    "gpt-4o",
+    "openai"
+  );
+  assert.deepEqual(nonClaude, {
     shouldFallback: false,
     cooldownMs: 0,
     reason: RateLimitReason.UNKNOWN,

@@ -2323,7 +2323,13 @@ export async function handleChatCore({
   let translatedBody = body;
   const isClaudePassthrough = sourceFormat === FORMATS.CLAUDE && targetFormat === FORMATS.CLAUDE;
   const isClaudeCodeCompatible = isClaudeCodeCompatibleProvider(provider);
-  const upstreamStream = stream || isClaudeCodeCompatible;
+  const isNativeClaudeCodeOAuth =
+    provider === "claude" &&
+    !credentials?.apiKey &&
+    typeof credentials?.accessToken === "string" &&
+    credentials.accessToken.startsWith("sk-ant-oat");
+  const shouldUseClaudeCodeWireImage = isClaudeCodeCompatible || isNativeClaudeCodeOAuth;
+  const upstreamStream = stream || shouldUseClaudeCodeWireImage;
   let ccSessionId: string | null = null;
   const stripTypes = getStripTypesForProviderModel(provider || "", model || "");
 
@@ -2478,10 +2484,10 @@ export async function handleChatCore({
     if (nativeCodexPassthrough) {
       translatedBody = { ...body, _nativeCodexPassthrough: true };
       log?.debug?.("FORMAT", "native codex passthrough enabled");
-    } else if (isClaudeCodeCompatible) {
+    } else if (shouldUseClaudeCodeWireImage) {
       let normalizedForCc = { ...body };
 
-      // Claude Code-compatible providers expect Anthropic Messages-shaped payloads,
+      // Claude Code wire-image targets expect Anthropic Messages-shaped payloads,
       // but we extract only role/text/max_tokens/effort from an OpenAI-like view first.
       if (sourceFormat !== FORMATS.OPENAI) {
         const normalizeToolCallId = getModelNormalizeToolCallId(
@@ -2519,7 +2525,12 @@ export async function handleChatCore({
         now: new Date(),
         preserveCacheControl,
       });
-      log?.debug?.("FORMAT", "claude-code-compatible bridge enabled");
+      log?.debug?.(
+        "FORMAT",
+        isNativeClaudeCodeOAuth
+          ? "native claude oauth claude-code wire image enabled"
+          : "claude-code-compatible bridge enabled"
+      );
     } else if (isClaudePassthrough) {
       // Pure passthrough: forward the body as-is without OpenAI round-trip.
       // The Claude→OpenAI→Claude double translation was lossy and corrupted
