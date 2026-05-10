@@ -106,3 +106,5 @@ app.__qa_backup/
 .worktrees
 .next-playwright/
 cloud/
+
+!docs/openapi.yaml
