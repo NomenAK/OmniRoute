@@ -1,3 +1,4 @@
+-- 055: Legacy duplicate session_account_affinity migration retained for deterministic ordering after 050.
 CREATE TABLE IF NOT EXISTS session_account_affinity (
   session_key TEXT NOT NULL,
   provider TEXT NOT NULL,
