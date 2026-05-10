@@ -37,11 +37,10 @@ test-results
 playwright-report
 blob-report
 
-# Documentation copied into the runner for runtime docs/OpenAPI reads
+# Documentation (not needed in container)
+!docs/
 *.md
 !README.md
-!docs
-!docs/**
 
 # Electron (separate build)
 electron
