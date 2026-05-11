@@ -231,27 +231,78 @@ export class CliproxyapiExecutor extends BaseExecutor {
     // Mirrors the runtime "Patch I2/I4" effect previously applied via patch.mjs.
     // Strips are no-op when fields are absent (OpenAI-shape passthrough).
     if (this.isAnthropicShape(transformed)) {
-      delete transformed.output_config;
-      delete transformed.context_management;
+      // Unconditional strip for Capy/SDK extras that don't belong on the
+      // CPA wire path. CPA's own Claude Code cloak (CCH, billing header,
+      // uTLS, OAuth metadata.user_id) re-injects what Anthropic needs
+      // downstream.
       delete transformed.client_info;
       delete transformed.prompt_cache_key;
       delete transformed.safety_identifier;
       delete transformed.metadata;
 
       // Conditional thinking strip: preserve Anthropic-valid shapes
-      // ({type:"enabled"|"disabled", budget_tokens:N}) that applyThinkingBudget
-      // already normalized. Strip non-Anthropic shapes (e.g. Capy's
+      // ({type:"enabled"|"disabled", budget_tokens:N} or {type:"adaptive"})
+      // that applyThinkingBudget already normalized or buildClaudeCode-
+      // CompatibleRequest produced. Strip Capy-specific shapes (e.g.
       // {type:"adaptive", display:"summarized"}) which trigger Anthropic 400
-      // "Extra usage required" / "out of extra usage". The `display` field is
-      // a Capy-specific hint Anthropic doesn't accept.
+      // "Extra usage required". The `display` field is Capy SDK-specific.
       const thinking = transformed.thinking;
       if (thinking && typeof thinking === "object") {
         const t = thinking as Record<string, unknown>;
-        const validType = t.type === "enabled" || t.type === "disabled";
-        const hasValidBudget = typeof t.budget_tokens === "number" && t.budget_tokens >= 0;
-        const hasInvalidExtras = "display" in t;
-        if (!validType || !hasValidBudget || hasInvalidExtras) {
+        const hasNoExtras = !("display" in t);
+        const validEnabled =
+          hasNoExtras &&
+          (t.type === "enabled" || t.type === "disabled") &&
+          typeof t.budget_tokens === "number" &&
+          t.budget_tokens >= 0;
+        const validAdaptive = hasNoExtras && t.type === "adaptive";
+        if (!validEnabled && !validAdaptive) {
           delete transformed.thinking;
+        }
+      }
+
+      // Conditional output_config strip: preserve CC wire-image-spec
+      // ({effort:"low"|"medium"|"high"|"xhigh"}) which Anthropic accepts as
+      // part of the Claude Code wire image. resolveClaudeCodeCompatibleEffort
+      // emits "xhigh" for top-tier models (Opus 4.x), so the whitelist must
+      // include it — otherwise our own CC builder's output is stripped here
+      // and Anthropic loses the effort hint, leading to text-only responses
+      // without thinking blocks. Strip raw Capy/SDK shapes (extras like
+      // {effort:"max"} or extra fields) that trigger the extras-billing gate.
+      const oc = transformed.output_config;
+      if (oc && typeof oc === "object") {
+        const ocRec = oc as Record<string, unknown>;
+        const validEffort =
+          ocRec.effort === "low" ||
+          ocRec.effort === "medium" ||
+          ocRec.effort === "high" ||
+          ocRec.effort === "xhigh";
+        const hasOnlyEffort = Object.keys(ocRec).length === 1 && "effort" in ocRec;
+        if (!validEffort || !hasOnlyEffort) {
+          delete transformed.output_config;
+        }
+      }
+
+      // Conditional context_management strip: preserve CC wire-image-spec
+      // ({edits: [{type:"clear_thinking_20251015", keep:"all"}]}). Strip
+      // any other shape.
+      const cm = transformed.context_management;
+      if (cm && typeof cm === "object") {
+        const cmRec = cm as Record<string, unknown>;
+        const edits = cmRec.edits;
+        const validEdits =
+          Array.isArray(edits) &&
+          edits.length > 0 &&
+          edits.every(
+            (e) =>
+              e &&
+              typeof e === "object" &&
+              typeof (e as Record<string, unknown>).type === "string" &&
+              ((e as Record<string, unknown>).type as string).startsWith("clear_thinking_")
+          );
+        const hasOnlyEdits = Object.keys(cmRec).length === 1 && "edits" in cmRec;
+        if (!validEdits || !hasOnlyEdits) {
+          delete transformed.context_management;
         }
       }
 
