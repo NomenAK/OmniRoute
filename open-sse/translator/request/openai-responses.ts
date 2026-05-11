@@ -240,7 +240,10 @@ export function openaiResponsesToOpenAIRequest(
           name: toString(tool.name),
           description: toString(tool.description),
           parameters: tool.parameters,
-          strict: tool.strict,
+          // Fix: only pass `strict` if it's a real boolean. Capy/Responses
+          // sometimes sends `strict: null`, which Xiaomi MiMo rejects with
+          // 400 `Input should be a valid boolean`.
+          ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {}),
         },
       };
     });
@@ -512,7 +515,8 @@ export function openaiToOpenAIResponsesRequest(
           name: toString(fn.name),
           description: toString(fn.description),
           parameters: fn.parameters,
-          strict: fn.strict,
+          // Fix: only pass `strict` if it's a real boolean (see note above).
+          ...(typeof fn.strict === "boolean" ? { strict: fn.strict } : {}),
         };
       }
       return toolValue;
