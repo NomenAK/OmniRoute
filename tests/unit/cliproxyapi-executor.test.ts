@@ -184,7 +184,7 @@ describe("CliproxyapiExecutor", () => {
       assert.equal(result.thinking, undefined);
     });
 
-    it("strips output_config and context_management on /v1/messages routing", () => {
+    it("strips raw Capy-style output_config and context_management", () => {
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "claude-opus-4-7",
@@ -196,6 +196,44 @@ describe("CliproxyapiExecutor", () => {
       const result = exec.transformRequest("claude-opus-4-7", body, true, {});
       assert.equal(result.output_config, undefined);
       assert.equal(result.context_management, undefined);
+    });
+
+    it("preserves CC-spec output_config {effort:'high'}", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        output_config: { effort: "high" },
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.deepEqual(result.output_config, { effort: "high" });
+    });
+
+    it("preserves CC-spec context_management with clear_thinking edit", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.deepEqual(result.context_management, {
+        edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+      });
+    });
+
+    it("preserves CC-spec adaptive thinking {type:'adaptive'} without display", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        thinking: { type: "adaptive" },
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.deepEqual(result.thinking, { type: "adaptive" });
     });
 
     it("does not touch thinking on OpenAI-shape bodies", () => {
