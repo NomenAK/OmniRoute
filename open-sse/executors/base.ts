@@ -596,9 +596,22 @@ export class BaseExecutor {
             delete tb.context_management;
             appliedThinking = "off";
           } else if (!headerThinking && !headerEffort) {
-            // Default CC logic when no override headers are present
+            // Default CC logic when no override headers are present.
             const isHaiku = typeof tb.model === "string" && tb.model.includes("haiku");
             if (isHaiku) {
+              delete tb.thinking;
+              delete tb.output_config;
+              delete tb.context_management;
+            } else if (!isClaudeCodeClient && hasClaudeOAuthToken) {
+              // Capy/OpenAI-bridged traffic reaches the Claude OAuth path via the
+              // cloak (hasClaudeOAuthToken && !isClaudeCodeClient). Generic
+              // bridges sometimes attach Capy-style `thinking`/`output_config`/
+              // `context_management` that don't match the Claude Code wire image
+              // Anthropic now validates against (#2130-family body-shape
+              // enforcement). Auto-injecting CC defaults here also burns
+              // session-quota fast (#1761). Strip these for non-CC OAuth
+              // traffic; clients that genuinely want adaptive thinking can opt
+              // in via the `x-omniroute-thinking: adaptive` header.
               delete tb.thinking;
               delete tb.output_config;
               delete tb.context_management;
