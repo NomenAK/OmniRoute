@@ -30,6 +30,12 @@ export const EFFORT_BUDGETS = {
   xhigh: 131072, // T11: explicit alias used internally
 };
 
+// Adaptive mode starts conservative and scales with complexity signals.
+// Per-model caps (modelSpec.thinkingBudgetCap) are the ultimate ceiling.
+// Decoupled from EFFORT_BUDGETS so CUSTOM mode users can pick any effort
+// level without affecting adaptive floor.
+export const ADAPTIVE_BASE_BUDGET = 4096;
+
 // thinkingLevel string → budget token mapping
 // Used when clients send string-based thinking levels (e.g., VS Code Copilot)
 export const THINKING_LEVEL_MAP = {
@@ -41,9 +47,12 @@ export const THINKING_LEVEL_MAP = {
   xhigh: 131072, // T11: explicit xhigh alias
 };
 
-// Default config (passthrough = backward compatible)
+// Default config: adaptive mode injects a sensible thinking budget on
+// thinking-capable models when the client sends nothing or sends an
+// invalid shape (e.g. Capy's {type:"adaptive", display:"summarized"}).
+// Fork-local default. Upstream OmniRoute ships with PASSTHROUGH.
 export const DEFAULT_THINKING_CONFIG = {
-  mode: ThinkingMode.PASSTHROUGH,
+  mode: ThinkingMode.ADAPTIVE,
   customBudget: 10240,
   effortLevel: "medium",
 };
@@ -253,7 +262,17 @@ function setCustomBudget(body, budget) {
 }
 
 /**
- * ADAPTIVE mode: scale budget based on request complexity
+ * ADAPTIVE mode: scale budget based on request complexity.
+ *
+ * Signals (cumulative multiplier on top of base 1.0):
+ *   - messageCount > 10                          → +0.5  (long conversation)
+ *   - toolCount > 3                              → +0.5  (tool-heavy session)
+ *   - lastMsgLength > 2000                       → +0.3  (verbose last user turn)
+ *   - tool_use blocks in last 5 messages         → +0.3  (agentic in-flight)
+ *   - tool_result with is_error / "error" text   → +0.2  (retry implies more reasoning)
+ *
+ * Max multiplier ~2.8× (all signals firing). Budget capped per model
+ * by capThinkingBudget after scaling.
  */
 function applyAdaptiveBudget(body, cfg) {
   const messages = body.messages || body.input || [];
@@ -274,16 +293,49 @@ function applyAdaptiveBudget(body, cfg) {
     }
   }
 
+  // Content-aware signals: scan last 5 messages for tool_use blocks
+  // (Claude shape: content[].type==="tool_use" ; OpenAI shape: msg.tool_calls)
+  // and for error-flagged tool_result blocks.
+  const recentSlice = messages.slice(-5);
+  let hasRecentToolUse = false;
+  let hasErrorToolResult = false;
+  const ERROR_TEXT_RE = /\b(error|exception|failed|traceback|stderr)\b/i;
+  for (const msg of recentSlice) {
+    if (!msg || typeof msg !== "object") continue;
+    if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      hasRecentToolUse = true;
+    }
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (!block || typeof block !== "object") continue;
+        if (block.type === "tool_use") hasRecentToolUse = true;
+        if (block.type === "tool_result") {
+          if (block.is_error === true) {
+            hasErrorToolResult = true;
+            continue;
+          }
+          const content = block.content;
+          const text =
+            typeof content === "string"
+              ? content
+              : Array.isArray(content)
+                ? content.map((c) => (c && typeof c.text === "string" ? c.text : "")).join(" ")
+                : "";
+          if (ERROR_TEXT_RE.test(text)) hasErrorToolResult = true;
+        }
+      }
+    }
+  }
+
   // Calculate multiplier
   let multiplier = 1.0;
   if (messageCount > 10) multiplier += 0.5;
   if (toolCount > 3) multiplier += 0.5;
   if (lastMsgLength > 2000) multiplier += 0.3;
+  if (hasRecentToolUse) multiplier += 0.3;
+  if (hasErrorToolResult) multiplier += 0.2;
 
-  const baseBudget =
-    EFFORT_BUDGETS[cfg.effortLevel] ||
-    getDefaultThinkingBudget(body.model || "") ||
-    EFFORT_BUDGETS.medium;
+  const baseBudget = ADAPTIVE_BASE_BUDGET;
   const budget = capThinkingBudget(body.model || "", Math.ceil(baseBudget * multiplier));
 
   return setCustomBudget(body, budget);

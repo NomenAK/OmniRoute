@@ -21,6 +21,8 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   "gpt-5.5": {
     maxOutputTokens: 128000,
     contextWindow: 1050000,
+    defaultThinkingBudget: 10240,
+    thinkingBudgetCap: 32768,
     supportsThinking: true,
     supportsTools: true,
     supportsVision: true,
@@ -83,6 +85,8 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   "claude-opus-4-7": {
     maxOutputTokens: 128000,
     contextWindow: 1000000,
+    defaultThinkingBudget: 10240,
+    thinkingBudgetCap: 32768,
     supportsThinking: true,
     supportsTools: true,
     supportsVision: true,
