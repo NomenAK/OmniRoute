@@ -177,6 +177,10 @@ import {
   isClaudeCodeCompatibleProvider,
   resolveClaudeCodeCompatibleSessionId,
 } from "../services/claudeCodeCompatible.ts";
+import {
+  enforceThinkingTemperature,
+  disableThinkingIfToolChoiceForced,
+} from "../services/claudeCodeConstraints.ts";
 import { setGeminiThoughtSignatureMode } from "../services/geminiThoughtSignatureStore.ts";
 import { fetchLiveProviderLimits } from "@/lib/usage/providerLimits";
 import { isClaudeExtraUsageBlockEnabled } from "@/lib/providers/claudeExtraUsage";
@@ -2536,6 +2540,21 @@ export async function handleChatCore({
         now: new Date(),
         preserveCacheControl,
       });
+
+      // Complete the CC wire-image: inject context_management to pair with
+      // thinking (real CC always sends this edit to prevent thinking-block
+      // accumulation over long sessions), and enforce temperature=1 when
+      // thinking is enabled (Anthropic API constraint). These steps are
+      // done inside buildAndSignClaudeCodeRequest for the native claude
+      // executor path but the cliproxyapi path skips that helper.
+      if (translatedBody.thinking && !translatedBody.context_management) {
+        translatedBody.context_management = {
+          edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+        };
+      }
+      enforceThinkingTemperature(translatedBody);
+      disableThinkingIfToolChoiceForced(translatedBody);
+
       log?.debug?.(
         "FORMAT",
         isNativeClaudeCodeOAuth
