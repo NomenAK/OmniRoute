@@ -129,6 +129,86 @@ describe("CliproxyapiExecutor", () => {
       const result = exec.transformRequest("model", null, true, {});
       assert.equal(result, null);
     });
+
+    it("preserves Anthropic-valid thinking shape on /v1/messages routing", () => {
+      // {type:"enabled", budget_tokens:N} is the canonical Anthropic shape that
+      // applyThinkingBudget produces from any input. CPA must forward it intact.
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "Be helpful" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        thinking: { type: "enabled", budget_tokens: 10240 },
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.deepEqual(result.thinking, { type: "enabled", budget_tokens: 10240 });
+    });
+
+    it("preserves disabled thinking shape on /v1/messages routing", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        thinking: { type: "disabled", budget_tokens: 0 },
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.deepEqual(result.thinking, { type: "disabled", budget_tokens: 0 });
+    });
+
+    it("strips Capy-style adaptive thinking on /v1/messages routing", () => {
+      // Anthropic 400s on {type:"adaptive"} — strip when applyThinkingBudget
+      // didn't run (e.g. passthrough mode) and adaptive shape survived.
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        thinking: { type: "adaptive", display: "summarized" },
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.equal(result.thinking, undefined);
+    });
+
+    it("strips thinking carrying display field even with enabled type", () => {
+      // `display` is a Capy-specific hint Anthropic doesn't accept — strip
+      // even if `type` and `budget_tokens` look valid.
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        thinking: { type: "enabled", budget_tokens: 10240, display: "summarized" },
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.equal(result.thinking, undefined);
+    });
+
+    it("strips output_config and context_management on /v1/messages routing", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        output_config: { effort: "xhigh" },
+        context_management: { auto_summarize: true },
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.equal(result.output_config, undefined);
+      assert.equal(result.context_management, undefined);
+    });
+
+    it("does not touch thinking on OpenAI-shape bodies", () => {
+      // OpenAI-shape bodies route to /v1/chat/completions, no strip applied.
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+        thinking: { type: "adaptive", display: "summarized" },
+      };
+      const result = exec.transformRequest("gpt-5.5", body, true, {});
+      assert.deepEqual(result.thinking, { type: "adaptive", display: "summarized" });
+    });
   });
 
   describe("execute", () => {

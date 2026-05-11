@@ -143,6 +143,13 @@ export function claudeToOpenAIRequest(model, body, stream) {
     } else {
       result.reasoning_effort = "xhigh";
     }
+  } else if (body.thinking?.type === "adaptive") {
+    // Defensive: Capy's BYOK flow sends thinking:{type:"adaptive", display:"summarized"}.
+    // applyThinkingBudget normally converts this to an Anthropic-valid shape upstream,
+    // but in passthrough mode (or if the service skipped) it survives untranslated.
+    // Map to medium effort as a conservative default so OpenAI-target executors
+    // emit reasoning instead of dropping the signal entirely.
+    result.reasoning_effort = "medium";
   }
 
   return result;

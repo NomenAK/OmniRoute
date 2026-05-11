@@ -254,6 +254,22 @@ test("Claude -> OpenAI ignores disabled thinking and leaves reasoning_effort uns
   assert.equal(result.reasoning_effort, undefined);
 });
 
+test("Claude -> OpenAI maps adaptive thinking type to medium reasoning_effort", () => {
+  // Capy's BYOK flow ships thinking:{type:"adaptive", display:"summarized"}.
+  // applyThinkingBudget normally converts this upstream, but in passthrough mode
+  // it can survive untranslated. Forward translator must downgrade gracefully.
+  const result = claudeToOpenAIRequest(
+    "gpt-5",
+    {
+      messages: [{ role: "user", content: "hi" }],
+      thinking: { type: "adaptive", display: "summarized" },
+    },
+    false
+  );
+
+  assert.equal(result.reasoning_effort, "medium");
+});
+
 test("Claude -> OpenAI leaves reasoning_effort unset when no thinking/output_config present", () => {
   const result = claudeToOpenAIRequest(
     "gpt-5",
