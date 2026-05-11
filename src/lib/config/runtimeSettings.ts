@@ -12,7 +12,8 @@ export type RuntimeReloadSection =
   | "healthCheckLogs"
   | "thoughtSignature"
   | "modelsDevSync"
-  | "corsOrigins";
+  | "corsOrigins"
+  | "thinkingBudget";
 
 export interface RuntimeReloadChange {
   section: RuntimeReloadSection;
@@ -31,6 +32,7 @@ interface RuntimeSettingsSnapshot {
   modelsDevSyncEnabled: boolean;
   modelsDevSyncInterval: number | null;
   corsOrigins: string;
+  thinkingBudget: JsonRecord | null;
 }
 
 const DEFAULT_RUNTIME_SETTINGS_SNAPSHOT: RuntimeSettingsSnapshot = {
@@ -45,6 +47,7 @@ const DEFAULT_RUNTIME_SETTINGS_SNAPSHOT: RuntimeSettingsSnapshot = {
   modelsDevSyncEnabled: false,
   modelsDevSyncInterval: null,
   corsOrigins: "",
+  thinkingBudget: null,
 };
 
 let lastAppliedSnapshot: RuntimeSettingsSnapshot | null = null;
@@ -180,6 +183,22 @@ export function buildRuntimeSettingsSnapshot(
     modelsDevSyncEnabled: settings.modelsDevSyncEnabled === true,
     modelsDevSyncInterval: normalizeNumber(settings.modelsDevSyncInterval),
     corsOrigins: typeof settings.corsOrigins === "string" ? settings.corsOrigins : "",
+    thinkingBudget: normalizeThinkingBudget(settings.thinkingBudget),
+  };
+}
+
+function normalizeThinkingBudget(value: unknown): JsonRecord | null {
+  const record = toRecord(parseStoredJson(value, "thinkingBudget"));
+  if (Object.keys(record).length === 0) return null;
+  const mode = typeof record.mode === "string" ? record.mode : null;
+  if (!mode) return null;
+  return {
+    mode,
+    customBudget:
+      typeof record.customBudget === "number" && Number.isFinite(record.customBudget)
+        ? record.customBudget
+        : undefined,
+    effortLevel: typeof record.effortLevel === "string" ? record.effortLevel : undefined,
   };
 }
 
@@ -255,6 +274,13 @@ async function applyThoughtSignatureSection(mode: string) {
 async function applyCorsOriginsSection(corsOrigins: string) {
   const { setRuntimeAllowedOrigins } = await import("@/server/cors/origins");
   setRuntimeAllowedOrigins(corsOrigins);
+}
+
+async function applyThinkingBudgetSection(thinkingBudget: JsonRecord | null) {
+  const { setThinkingBudgetConfig } =
+    await import("@omniroute/open-sse/services/thinkingBudget.ts");
+  if (!thinkingBudget) return;
+  setThinkingBudgetConfig(thinkingBudget);
 }
 
 async function applyModelsDevSyncSection(
@@ -390,6 +416,11 @@ export async function applyRuntimeSettings(
   if (force || hasChanged(currentSnapshot.corsOrigins, previousSnapshot.corsOrigins)) {
     await applyCorsOriginsSection(currentSnapshot.corsOrigins);
     markChanged("corsOrigins");
+  }
+
+  if (force || hasChanged(currentSnapshot.thinkingBudget, previousSnapshot.thinkingBudget)) {
+    await applyThinkingBudgetSection(currentSnapshot.thinkingBudget);
+    markChanged("thinkingBudget");
   }
 
   lastAppliedSnapshot = currentSnapshot;
