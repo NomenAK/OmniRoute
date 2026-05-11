@@ -1,6 +1,7 @@
 import { CORS_HEADERS } from "../utils/cors.ts";
 import { detectFormatFromEndpoint, getTargetFormat } from "../services/provider.ts";
 import { injectSystemPrompt } from "../services/systemPrompt.ts";
+import { applyThinkingBudget } from "../services/thinkingBudget.ts";
 import { translateRequest, needsTranslation } from "../translator/index.ts";
 import { FORMATS } from "../translator/formats.ts";
 import {
@@ -2482,9 +2483,19 @@ export async function handleChatCore({
 
   try {
     if (nativeCodexPassthrough) {
-      translatedBody = { ...body, _nativeCodexPassthrough: true };
+      // Normalize thinking shape even on passthrough so client-side shapes
+      // (Capy adaptive, raw reasoning_effort strings) don't surprise the
+      // Codex backend.
+      translatedBody = applyThinkingBudget({ ...body, _nativeCodexPassthrough: true });
       log?.debug?.("FORMAT", "native codex passthrough enabled");
     } else if (shouldUseClaudeCodeWireImage) {
+      // Normalize thinking on the source body BEFORE the wire-image rebuild.
+      // resolveClaudeCodeCompatibleThinking (claudeCodeCompatible.ts:911) prefers
+      // claudeBody.thinking over normalizedBody.thinking, so if we only normalize
+      // inside translateRequest below, the wire-image picks the raw client shape
+      // (e.g. Capy's {type:"adaptive", display:"summarized"}) and the downstream
+      // cliproxyapi conditional strip then deletes it as invalid.
+      body = applyThinkingBudget(body);
       let normalizedForCc = { ...body };
 
       // Claude Code wire-image targets expect Anthropic Messages-shaped payloads,
@@ -2539,6 +2550,14 @@ export async function handleChatCore({
       // regardless of combo strategy or cache_control settings.
       translatedBody = { ...body };
       translatedBody._disableToolPrefix = true;
+      // Phase 2: Apply thinking budget control here too. translateRequest
+      // (which normally runs applyThinkingBudget at the head of the pipeline)
+      // is skipped in passthrough mode, so we must invoke the service
+      // directly. Without this, client-side adaptive/level shapes
+      // (e.g. Capy's thinking:{type:"adaptive", display:"summarized"}) reach
+      // Anthropic untranslated and get either 400'd or silently dropped
+      // downstream (cliproxyapi conditional strip).
+      translatedBody = applyThinkingBudget(translatedBody);
       normalizeClaudeUpstreamMessages(translatedBody, { preserveToolResultBlocks: true });
 
       log?.debug?.("FORMAT", `claude passthrough (preserveCache=${preserveCacheControl})`);
