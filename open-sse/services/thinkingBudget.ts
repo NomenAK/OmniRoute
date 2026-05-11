@@ -20,7 +20,9 @@ import {
   supportsReasoning,
 } from "@/lib/modelCapabilities";
 
-// Effort → budget token mapping
+// Effort → budget token mapping (legacy; kept for backward compat with CUSTOM
+// reverse-mapping and OpenAI bucket fallbacks). Adaptive uses
+// EFFORT_BASELINES (below) for its tier-scaled starting points.
 export const EFFORT_BUDGETS = {
   none: 0,
   low: 1024,
@@ -30,11 +32,37 @@ export const EFFORT_BUDGETS = {
   xhigh: 131072, // T11: explicit alias used internally
 };
 
-// Adaptive mode starts conservative and scales with complexity signals.
-// Per-model caps (modelSpec.thinkingBudgetCap) are the ultimate ceiling.
-// Decoupled from EFFORT_BUDGETS so CUSTOM mode users can pick any effort
-// level without affecting adaptive floor.
-export const ADAPTIVE_BASE_BUDGET = 4096;
+// 5-tier effort baselines used by ADAPTIVE mode. The starting budget for
+// each tier is multiplied by the adaptive signal multiplier (1.0×–2.8×)
+// then capped by the per-model thinkingBudgetCap. Anthropic accepts the
+// same 5 labels in CC wire-image `output_config.effort`, so adaptive
+// emits BOTH the tier label AND the computed budget_tokens.
+export const EFFORT_BASELINES: Record<string, number> = {
+  none: 0,
+  low: 2048,
+  medium: 6144,
+  high: 16384,
+  xhigh: 32768,
+  max: 65536, // Subject to model cap
+};
+
+// Legacy export kept for any imports — adaptive default tier is medium.
+export const ADAPTIVE_BASE_BUDGET = EFFORT_BASELINES.medium;
+
+/**
+ * Map a numeric budget back to the closest CC-spec effort label.
+ * Used to emit output_config.effort alongside thinking.budget_tokens.
+ * Wire-spec only includes low/medium/high/xhigh — "max" is a settings
+ * label that maps to "xhigh" on the wire (Anthropic CC + OpenAI both
+ * top out at xhigh).
+ */
+export function budgetToEffortTier(budget: number): string {
+  if (budget <= 0) return "none";
+  if (budget <= EFFORT_BASELINES.low) return "low";
+  if (budget <= EFFORT_BASELINES.medium) return "medium";
+  if (budget <= EFFORT_BASELINES.high) return "high";
+  return "xhigh";
+}
 
 // thinkingLevel string → budget token mapping
 // Used when clients send string-based thinking levels (e.g., VS Code Copilot)
@@ -57,21 +85,33 @@ export const DEFAULT_THINKING_CONFIG = {
   effortLevel: "medium",
 };
 
-// In-memory config (loaded from DB on startup, or default)
-let _config = { ...DEFAULT_THINKING_CONFIG };
+// In-memory config anchored on globalThis via Symbol.for so all Next.js
+// bundles (server, edge, route handlers, open-sse handlers) share the
+// same instance. Otherwise each bundle gets its own module-level _config
+// and updates made via the settings API or startup hydration are
+// invisible to applyThinkingBudget when called from a different bundle.
+const _CONFIG_KEY = Symbol.for("omniroute.thinkingBudget._config");
+type ThinkingConfig = { mode: string; customBudget: number; effortLevel: string };
+
+function _getConfig(): ThinkingConfig {
+  const g = globalThis as unknown as Record<symbol, ThinkingConfig>;
+  if (!g[_CONFIG_KEY]) g[_CONFIG_KEY] = { ...DEFAULT_THINKING_CONFIG };
+  return g[_CONFIG_KEY];
+}
 
 /**
  * Set the thinking budget config (called from settings API or startup)
  */
 export function setThinkingBudgetConfig(config) {
-  _config = { ...DEFAULT_THINKING_CONFIG, ...config };
+  const g = globalThis as unknown as Record<symbol, ThinkingConfig>;
+  g[_CONFIG_KEY] = { ...DEFAULT_THINKING_CONFIG, ...config };
 }
 
 /**
  * Get current thinking budget config
  */
 export function getThinkingBudgetConfig() {
-  return { ..._config };
+  return { ..._getConfig() };
 }
 
 /**
@@ -162,7 +202,7 @@ export function ensureThinkingConfig(body) {
  * @returns {object} Modified body
  */
 export function applyThinkingBudget(body, config = null) {
-  const cfg = config || _config;
+  const cfg = config || _getConfig();
   if (!body || typeof body !== "object") return body;
 
   // Early exit: strip ALL reasoning/thinking params for models that don't support them.
@@ -220,17 +260,32 @@ function stripThinkingConfig(body) {
 }
 
 /**
- * CUSTOM mode: set exact budget tokens
+ * CUSTOM mode: set exact budget tokens. Also emits the matching effort
+ * tier label on output_config so CC wire-image targets get a complete
+ * thinking declaration (both fields).
  */
 function setCustomBudget(body, budget) {
   const result = { ...body };
+  const effortTier = budgetToEffortTier(budget);
 
-  // If body already has thinking config in Claude format, update it
+  // Claude thinking: emit enabled/disabled with explicit budget_tokens
   if (result.thinking || hasThinkingCapableModel(result)) {
     result.thinking = {
       type: budget > 0 ? "enabled" : "disabled",
       budget_tokens: budget,
     };
+  }
+
+  // CC wire-image output_config.effort: emit alongside thinking so
+  // Anthropic-OAuth (Claude Code path) receives both signals.
+  // Only inject for thinking-capable models when budget > 0.
+  if (budget > 0 && (result.thinking || hasThinkingCapableModel(result))) {
+    const oc =
+      result.output_config && typeof result.output_config === "object"
+        ? { ...(result.output_config as Record<string, unknown>) }
+        : {};
+    oc.effort = effortTier === "none" ? "low" : effortTier;
+    result.output_config = oc;
   }
 
   // OpenAI reasoning_effort mapping.
@@ -239,14 +294,8 @@ function setCustomBudget(body, budget) {
     if (budget <= 0) {
       delete result.reasoning_effort;
       delete result.reasoning;
-    } else if (budget <= 1024) {
-      result.reasoning_effort = "low";
-    } else if (budget <= 10240) {
-      result.reasoning_effort = "medium";
-    } else if (budget < 131072) {
-      result.reasoning_effort = "high";
     } else {
-      result.reasoning_effort = "xhigh";
+      result.reasoning_effort = effortTier === "none" ? "low" : effortTier;
     }
   }
 
@@ -262,7 +311,16 @@ function setCustomBudget(body, budget) {
 }
 
 /**
- * ADAPTIVE mode: scale budget based on request complexity.
+ * ADAPTIVE mode: scale budget based on the requested effort tier +
+ * complexity signals.
+ *
+ * Effort tier priority:
+ *   1. body.output_config.effort (CC wire-image input)
+ *   2. cfg.effortLevel (settings UI)
+ *   3. "medium" (default)
+ *
+ * Tier baselines (EFFORT_BASELINES): low=2K, medium=6K, high=16K,
+ * xhigh=32K, max=64K. Then signals stack a multiplier on top.
  *
  * Signals (cumulative multiplier on top of base 1.0):
  *   - messageCount > 10                          → +0.5  (long conversation)
@@ -271,8 +329,8 @@ function setCustomBudget(body, budget) {
  *   - tool_use blocks in last 5 messages         → +0.3  (agentic in-flight)
  *   - tool_result with is_error / "error" text   → +0.2  (retry implies more reasoning)
  *
- * Max multiplier ~2.8× (all signals firing). Budget capped per model
- * by capThinkingBudget after scaling.
+ * Max multiplier ~2.8× (all signals firing). Final budget capped per
+ * model by capThinkingBudget.
  */
 function applyAdaptiveBudget(body, cfg) {
   const messages = body.messages || body.input || [];
@@ -335,7 +393,21 @@ function applyAdaptiveBudget(body, cfg) {
   if (hasRecentToolUse) multiplier += 0.3;
   if (hasErrorToolResult) multiplier += 0.2;
 
-  const baseBudget = ADAPTIVE_BASE_BUDGET;
+  // Resolve effort tier baseline.
+  // Priority: body.output_config.effort > cfg.effortLevel > "medium".
+  const bodyEffort =
+    body.output_config && typeof body.output_config === "object"
+      ? (body.output_config as Record<string, unknown>).effort
+      : undefined;
+  const tier =
+    (typeof bodyEffort === "string" && EFFORT_BASELINES[bodyEffort.toLowerCase()] !== undefined
+      ? bodyEffort.toLowerCase()
+      : null) ||
+    (typeof cfg.effortLevel === "string" && EFFORT_BASELINES[cfg.effortLevel] !== undefined
+      ? cfg.effortLevel
+      : null) ||
+    "medium";
+  const baseBudget = EFFORT_BASELINES[tier] ?? EFFORT_BASELINES.medium;
   const budget = capThinkingBudget(body.model || "", Math.ceil(baseBudget * multiplier));
 
   return setCustomBudget(body, budget);

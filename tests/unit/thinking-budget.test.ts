@@ -144,15 +144,42 @@ test("ADAPTIVE: simple request gets ADAPTIVE_BASE_BUDGET", () => {
   setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
 });
 
-test("ADAPTIVE: ignores effortLevel (decoupled from EFFORT_BUDGETS)", () => {
-  // effortLevel only matters for CUSTOM mode now; adaptive uses ADAPTIVE_BASE_BUDGET
+test("ADAPTIVE: effortLevel selects baseline tier", () => {
+  // Adaptive now reads effortLevel to pick from EFFORT_BASELINES.
+  // "high" tier baseline is 16384 (× 1.0 multiplier for a simple request).
   setThinkingBudgetConfig({ mode: ThinkingMode.ADAPTIVE, effortLevel: "high" });
   const body = {
     model: "claude-sonnet-4-20250514",
     messages: [{ role: "user", content: "hello" }],
   };
   const result = applyThinkingBudget(body);
-  assert.equal(result.thinking.budget_tokens, ADAPTIVE_BASE_BUDGET);
+  assert.equal(result.thinking.budget_tokens, 16384);
+  setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
+});
+
+test("ADAPTIVE: body.output_config.effort overrides cfg.effortLevel", () => {
+  // CC wire-image priority: body's output_config.effort wins over settings.
+  setThinkingBudgetConfig({ mode: ThinkingMode.ADAPTIVE, effortLevel: "low" });
+  const body = {
+    model: "claude-sonnet-4-20250514",
+    messages: [{ role: "user", content: "hi" }],
+    output_config: { effort: "high" },
+  };
+  const result = applyThinkingBudget(body);
+  assert.equal(result.thinking.budget_tokens, 16384);
+  setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
+});
+
+test("ADAPTIVE: emits both thinking.budget_tokens AND output_config.effort", () => {
+  setThinkingBudgetConfig({ mode: ThinkingMode.ADAPTIVE, effortLevel: "medium" });
+  const body = {
+    model: "claude-sonnet-4-20250514",
+    messages: [{ role: "user", content: "hi" }],
+  };
+  const result = applyThinkingBudget(body);
+  assert.equal(result.thinking.type, "enabled");
+  assert.equal(result.thinking.budget_tokens, 6144);
+  assert.equal(result.output_config.effort, "medium");
   setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
 });
 
