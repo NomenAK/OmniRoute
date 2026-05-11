@@ -418,6 +418,16 @@ export class DefaultExecutor extends BaseExecutor {
           delete withoutStreamOptions.stream_options;
           withDefaults = withoutStreamOptions;
         }
+      } else if (
+        !stream &&
+        Object.prototype.hasOwnProperty.call(withDefaults, "stream_options")
+      ) {
+        // Strict OpenAI-compatible providers (e.g. DeepSeek) reject `stream_options`
+        // unless `stream=true`. Drop it on non-streaming turns so we don't bubble
+        // a 400 `stream_options should be set along with stream = true`.
+        const withoutStreamOptions = { ...withDefaults } as Record<string, unknown>;
+        delete withoutStreamOptions.stream_options;
+        withDefaults = withoutStreamOptions;
       }
 
       // #1961: Map max_tokens -> max_completion_tokens for recent OpenAI models
