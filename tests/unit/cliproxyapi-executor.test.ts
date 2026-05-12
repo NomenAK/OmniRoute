@@ -356,15 +356,48 @@ describe("CliproxyapiExecutor", () => {
       assert.equal(result.output_config, undefined);
     });
 
-    it("strips metadata", () => {
+    it("preserves bare metadata {user_id} as a CPA cloak-seed", () => {
       const exec = new CliproxyapiExecutor();
       const result = exec.transformRequest(
         "claude-opus-4-7",
-        anthropicBody({ metadata: { user_id: "abc" } }),
+        anthropicBody({ metadata: { user_id: "user_3DGta5gzamzAUr57ZYZEtmc6lHX" } }),
+        true,
+        {}
+      );
+      assert.deepEqual(result.metadata, {
+        user_id: "user_3DGta5gzamzAUr57ZYZEtmc6lHX",
+      });
+    });
+
+    it("strips metadata when it carries extras beyond user_id", () => {
+      const exec = new CliproxyapiExecutor();
+      const result = exec.transformRequest(
+        "claude-opus-4-7",
+        anthropicBody({
+          metadata: { user_id: "abc", session_id: "s1", client_info: { name: "Capy" } },
+        }),
         true,
         {}
       );
       assert.equal(result.metadata, undefined);
+    });
+
+    it("strips metadata when user_id is missing or non-string", () => {
+      const exec = new CliproxyapiExecutor();
+      const result1 = exec.transformRequest(
+        "claude-opus-4-7",
+        anthropicBody({ metadata: { session_id: "s1" } }),
+        true,
+        {}
+      );
+      assert.equal(result1.metadata, undefined);
+      const result2 = exec.transformRequest(
+        "claude-opus-4-7",
+        anthropicBody({ metadata: { user_id: 42 } }),
+        true,
+        {}
+      );
+      assert.equal(result2.metadata, undefined);
     });
 
     it("strips client_info", () => {

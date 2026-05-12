@@ -236,7 +236,27 @@ export class CliproxyapiExecutor extends BaseExecutor {
       delete transformed.client_info;
       delete transformed.prompt_cache_key;
       delete transformed.safety_identifier;
-      delete transformed.metadata;
+
+      // Conditional metadata strip. Preserve a bare `{user_id: <string>}`
+      // shape so a CPA-side patch can use the inbound user_id as a
+      // deterministic seed for the cloaked Claude-Code-shaped user_id
+      // (current CPA generates a fresh random UUIDv4 per call → no
+      // Anthropic prompt-cache reuse across calls from the same BYOK
+      // user ; passing through a stable Capy `metadata.user_id` lets CPA
+      // derive a stable `account_uuid`/`session_uuid` triplet from it).
+      //
+      // Strip metadata entirely if it carries any field beyond `user_id`
+      // (Capy's SDK can add `session_id`, `client_info`, etc., which
+      // Anthropic rejects).
+      const md = transformed.metadata;
+      if (md && typeof md === "object") {
+        const mdRec = md as Record<string, unknown>;
+        const isBareUserId = typeof mdRec.user_id === "string" && Object.keys(mdRec).length === 1;
+        if (!isBareUserId) {
+          delete transformed.metadata;
+        }
+        // bare {user_id: <string>} shape : keep as-is.
+      }
 
       // Conditional thinking strip: preserve Anthropic-valid shapes
       // ({type:"enabled"|"disabled", budget_tokens:N}) that applyThinkingBudget
