@@ -29,11 +29,30 @@ const HEALTH_CHECK_TIMEOUT_MS = 5000;
 
 // Anthropic's reserved tool-name namespace: ^mcp_[^_].* triggers their
 // server-side MCP connector billing gate, returning a misleading
-// "out of extra usage" 400. Two-underscore (mcp__X) and capitalized
-// (Mcp_X) variants pass cleanly.
+// "out of extra usage" 400 (confirmed live probe 2026-05-12 — fires
+// even with valid OAuth + CPA cloak). Two-underscore (mcp__X) and
+// capitalized (Mcp_X) variants pass cleanly.
+//
+// Underlying cause is likely CPA's fake account_uuid (`uuid.New()` per
+// call) failing Anthropic's "real Claude Code account" recognition. Until
+// that's patched CPA-side, we rewrite the tool name to dodge the gate.
 const MCP_RESERVED_PREFIX_RE = /^mcp_(?=[^_])/;
 
+// Single source-of-truth transformation: `mcp_X` → `Mcp_X`. Applied both
+// to tool names (so the gate doesn't fire) AND to every textual reference
+// (system prompt blocks + tool descriptions) so the model sees a
+// consistent naming scheme. Without the text rewrite, the model reads
+// "use mcp_call" in the prompt but only finds `Mcp_call` in the tool
+// catalog and falls back to plain-text responses, breaking tool calling.
+const MCP_NAME_REF_RE = /\bmcp_(?=[^_\s])/g;
+const mcpRewriteOf = (s: string): string => s.replace(MCP_NAME_REF_RE, "Mcp_");
+
 function rewriteMcpToolName(name: string): string | null {
+  // Diagnostic toggle: OMNIROUTE_DISABLE_MCP_REWRITE=1 bypasses the
+  // rewrite to probe whether the gate fires in the current cloak context.
+  // Live confirmation 2026-05-12: gate fires with rewrite OFF, so we
+  // keep it ON unless investigating.
+  if (process.env.OMNIROUTE_DISABLE_MCP_REWRITE === "1") return null;
   if (typeof name !== "string" || !MCP_RESERVED_PREFIX_RE.test(name)) return null;
   return "M" + name.slice(1); // mcp_call → Mcp_call
 }
@@ -106,6 +125,33 @@ function applyMcpToolNameRewrite(body: Record<string, unknown>): Map<string, str
         body.tool_choice = { ...tc, name: rewritten };
         remember(original, rewritten);
       }
+    }
+  }
+
+  // If we rewrote any tool name, apply the same regex transformation to
+  // textual references in the system prompt + tool descriptions so the
+  // model sees consistent naming. Single-pass regex matches the same
+  // pattern used on the tool names themselves — no need to enumerate the
+  // rewritten name set explicitly.
+  if (reverseMap.size > 0) {
+    const sys = body.system;
+    if (typeof sys === "string") {
+      body.system = mcpRewriteOf(sys);
+    } else if (Array.isArray(sys)) {
+      body.system = sys.map((block) => {
+        if (block && typeof block === "object") {
+          const b = block as Record<string, unknown>;
+          if (typeof b.text === "string") return { ...b, text: mcpRewriteOf(b.text) };
+        }
+        return block;
+      });
+    }
+    if (Array.isArray(body.tools)) {
+      body.tools = (body.tools as Array<Record<string, unknown>>).map((t) =>
+        t && typeof t === "object" && typeof t.description === "string"
+          ? { ...t, description: mcpRewriteOf(t.description) }
+          : t
+      );
     }
   }
 
@@ -252,7 +298,21 @@ export class CliproxyapiExecutor extends BaseExecutor {
       delete transformed.client_info;
       delete transformed.prompt_cache_key;
       delete transformed.safety_identifier;
-      delete transformed.metadata;
+
+      // Conditional metadata: preserve a bare `{user_id: <string>}` shape
+      // so a CPA-side patch can use it as a deterministic seed for the
+      // cloaked user_id (account_uuid + session_uuid become stable per
+      // Capy user → Anthropic prompt cache hits across calls). Strip
+      // anything else under metadata that Capy may add (Anthropic 400s).
+      const md = transformed.metadata;
+      if (md && typeof md === "object") {
+        const mdRec = md as Record<string, unknown>;
+        if (typeof mdRec.user_id === "string" && Object.keys(mdRec).length === 1) {
+          // Keep — pure {user_id} shape.
+        } else {
+          delete transformed.metadata;
+        }
+      }
 
       // Conditional thinking strip: preserve Anthropic-valid shapes
       // ({type:"enabled"|"disabled", budget_tokens:N} or {type:"adaptive"})

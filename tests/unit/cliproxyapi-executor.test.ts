@@ -427,11 +427,22 @@ describe("CliproxyapiExecutor", () => {
       assert.equal(result.output_config, undefined);
     });
 
-    it("strips metadata", () => {
+    it("preserves bare metadata {user_id} for CPA cloak-seed cooperation", () => {
       const exec = new CliproxyapiExecutor();
       const result = exec.transformRequest(
         "claude-opus-4-7",
-        anthropicBody({ metadata: { user_id: "abc" } }),
+        anthropicBody({ metadata: { user_id: "user_3DGta5gz" } }),
+        true,
+        {}
+      );
+      assert.deepEqual(result.metadata, { user_id: "user_3DGta5gz" });
+    });
+
+    it("strips metadata when it carries Capy extras beyond user_id", () => {
+      const exec = new CliproxyapiExecutor();
+      const result = exec.transformRequest(
+        "claude-opus-4-7",
+        anthropicBody({ metadata: { user_id: "abc", session_id: "s1", extra: 1 } }),
         true,
         {}
       );
