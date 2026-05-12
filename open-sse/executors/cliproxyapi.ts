@@ -281,105 +281,22 @@ export class CliproxyapiExecutor extends BaseExecutor {
       transformed.model = model;
     }
 
-    // For Anthropic-shape bodies routed to CPA's /v1/messages, strip the
-    // Capy/Anthropic-SDK premium extras that Anthropic gates with
-    // "Extra usage is required" / "out of extra usage" (400). CPA does its
-    // own Claude Code wire-image cloak (CCH, billing header, uTLS, metadata
-    // user_id, system sentinel) downstream — but it forwards client extras
-    // like output_config.effort=xhigh which trigger the extras-billing gate.
+    // For Anthropic-shape bodies routed to CPA's /v1/messages, apply only
+    // the transformations that empirical testing (2026-05-12 bisect, 11
+    // variants × 2 turns + 5-turn stress) confirmed necessary:
     //
-    // Mirrors the runtime "Patch I2/I4" effect previously applied via patch.mjs.
-    // Strips are no-op when fields are absent (OpenAI-shape passthrough).
+    //   - mcp_X tool-name rewrite to dodge Anthropic's reserved ^mcp_[^_]
+    //     gate (historically confirmed char-by-char in 2026-05-11 probe).
+    //
+    // Previous conditional strips (client_info / prompt_cache_key /
+    // safety_identifier / non-CC metadata / Capy SDK thinking shape /
+    // output_config whitelist / context_management whitelist) were all
+    // proven unnecessary in the bisect — Anthropic accepts these shapes
+    // intact alongside the CPA cloak. Removing them eliminates silent
+    // strip-of-valid-content edge cases that were degrading model behavior
+    // (e.g. Capy's message_user tool-use contract reaching Anthropic
+    // intact only when nothing else stripped neighbouring fields).
     if (this.isAnthropicShape(transformed)) {
-      // Unconditional strip for Capy/SDK extras that don't belong on the
-      // CPA wire path. CPA's own Claude Code cloak (CCH, billing header,
-      // uTLS, OAuth metadata.user_id) re-injects what Anthropic needs
-      // downstream.
-      delete transformed.client_info;
-      delete transformed.prompt_cache_key;
-      delete transformed.safety_identifier;
-
-      // Conditional metadata: preserve a bare `{user_id: <string>}` shape
-      // so a CPA-side patch can use it as a deterministic seed for the
-      // cloaked user_id (account_uuid + session_uuid become stable per
-      // Capy user → Anthropic prompt cache hits across calls). Strip
-      // anything else under metadata that Capy may add (Anthropic 400s).
-      const md = transformed.metadata;
-      if (md && typeof md === "object") {
-        const mdRec = md as Record<string, unknown>;
-        if (typeof mdRec.user_id === "string" && Object.keys(mdRec).length === 1) {
-          // Keep — pure {user_id} shape.
-        } else {
-          delete transformed.metadata;
-        }
-      }
-
-      // Conditional thinking strip: preserve Anthropic-valid shapes
-      // ({type:"enabled"|"disabled", budget_tokens:N} or {type:"adaptive"})
-      // that applyThinkingBudget already normalized or buildClaudeCode-
-      // CompatibleRequest produced. Strip Capy-specific shapes (e.g.
-      // {type:"adaptive", display:"summarized"}) which trigger Anthropic 400
-      // "Extra usage required". The `display` field is Capy SDK-specific.
-      const thinking = transformed.thinking;
-      if (thinking && typeof thinking === "object") {
-        const t = thinking as Record<string, unknown>;
-        const hasNoExtras = !("display" in t);
-        const validEnabled =
-          hasNoExtras &&
-          (t.type === "enabled" || t.type === "disabled") &&
-          typeof t.budget_tokens === "number" &&
-          t.budget_tokens >= 0;
-        const validAdaptive = hasNoExtras && t.type === "adaptive";
-        if (!validEnabled && !validAdaptive) {
-          delete transformed.thinking;
-        }
-      }
-
-      // Conditional output_config strip: preserve CC wire-image-spec
-      // ({effort:"low"|"medium"|"high"|"xhigh"}) which Anthropic accepts as
-      // part of the Claude Code wire image. resolveClaudeCodeCompatibleEffort
-      // emits "xhigh" for top-tier models (Opus 4.x), so the whitelist must
-      // include it — otherwise our own CC builder's output is stripped here
-      // and Anthropic loses the effort hint, leading to text-only responses
-      // without thinking blocks. Strip raw Capy/SDK shapes (extras like
-      // {effort:"max"} or extra fields) that trigger the extras-billing gate.
-      const oc = transformed.output_config;
-      if (oc && typeof oc === "object") {
-        const ocRec = oc as Record<string, unknown>;
-        const validEffort =
-          ocRec.effort === "low" ||
-          ocRec.effort === "medium" ||
-          ocRec.effort === "high" ||
-          ocRec.effort === "xhigh";
-        const hasOnlyEffort = Object.keys(ocRec).length === 1 && "effort" in ocRec;
-        if (!validEffort || !hasOnlyEffort) {
-          delete transformed.output_config;
-        }
-      }
-
-      // Conditional context_management strip: preserve CC wire-image-spec
-      // ({edits: [{type:"clear_thinking_20251015", keep:"all"}]}). Strip
-      // any other shape.
-      const cm = transformed.context_management;
-      if (cm && typeof cm === "object") {
-        const cmRec = cm as Record<string, unknown>;
-        const edits = cmRec.edits;
-        const validEdits =
-          Array.isArray(edits) &&
-          edits.length > 0 &&
-          edits.every(
-            (e) =>
-              e &&
-              typeof e === "object" &&
-              typeof (e as Record<string, unknown>).type === "string" &&
-              ((e as Record<string, unknown>).type as string).startsWith("clear_thinking_")
-          );
-        const hasOnlyEdits = Object.keys(cmRec).length === 1 && "edits" in cmRec;
-        if (!validEdits || !hasOnlyEdits) {
-          delete transformed.context_management;
-        }
-      }
-
       // Rewrite tool names matching Anthropic's reserved ^mcp_[^_] namespace.
       // Anthropic returns "out of extra usage" / "Extra usage required" 400
       // when a client-declared tool name collides with their server-side MCP
