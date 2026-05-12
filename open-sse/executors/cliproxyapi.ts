@@ -33,6 +33,16 @@ const HEALTH_CHECK_TIMEOUT_MS = 5000;
 // (Mcp_X) variants pass cleanly.
 const MCP_RESERVED_PREFIX_RE = /^mcp_(?=[^_])/;
 
+// Same transformation, written as a global-replace regex with a left
+// word-boundary and a right negative-lookahead. Applied to text that
+// references tool names (system prompt blocks + tool descriptions) so
+// the renamed catalog stays consistent with the prose that describes it.
+// Word boundary on the left avoids matching the middle of identifiers
+// like `my_mcp_call` ; the lookahead avoids touching valid-already
+// forms (`mcp__call`) and avoids matching dangling "mcp_ " phrases.
+const MCP_NAME_REF_RE = /\bmcp_(?=[^_\s])/g;
+const mcpRewriteText = (s: string): string => s.replace(MCP_NAME_REF_RE, "Mcp_");
+
 function rewriteMcpToolName(name: string): string | null {
   if (typeof name !== "string" || !MCP_RESERVED_PREFIX_RE.test(name)) return null;
   return "M" + name.slice(1); // mcp_call → Mcp_call
@@ -106,6 +116,38 @@ function applyMcpToolNameRewrite(body: Record<string, unknown>): Map<string, str
         body.tool_choice = { ...tc, name: rewritten };
         remember(original, rewritten);
       }
+    }
+  }
+
+  // If any tool name was rewritten, apply the same transformation to
+  // textual references to those names in the system prompt + tool
+  // descriptions. Without this step, the model reads "use mcp_call" in
+  // the system prompt but only finds `Mcp_call` in the tool catalog,
+  // gives up on tool-calling, and falls back to plain-text — which
+  // Anthropic-SDK clients render as a reasoning trace rather than a
+  // message (Capy "the reply lands in the Thought panel" symptom).
+  //
+  // Skip message content blocks — they may carry user-supplied text we
+  // shouldn't mutate.
+  if (reverseMap.size > 0) {
+    const sys = body.system;
+    if (typeof sys === "string") {
+      body.system = mcpRewriteText(sys);
+    } else if (Array.isArray(sys)) {
+      body.system = sys.map((block) => {
+        if (block && typeof block === "object") {
+          const b = block as Record<string, unknown>;
+          if (typeof b.text === "string") return { ...b, text: mcpRewriteText(b.text) };
+        }
+        return block;
+      });
+    }
+    if (Array.isArray(body.tools)) {
+      body.tools = (body.tools as Array<Record<string, unknown>>).map((t) =>
+        t && typeof t === "object" && typeof t.description === "string"
+          ? { ...t, description: mcpRewriteText(t.description) }
+          : t
+      );
     }
   }
 

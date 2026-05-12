@@ -466,5 +466,106 @@ describe("CliproxyapiExecutor", () => {
         "tool_use name should be rewritten"
       );
     });
+
+    it("rewrites mcp_ references in system prompt text blocks", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [
+          { type: "text", text: "Use mcp_query to discover tools, then mcp_call to invoke them." },
+        ],
+        tools: [{ name: "mcp_query", description: "x", input_schema: {} }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      const sysText = (result.system as Array<{ text: string }>)[0].text;
+      assert.match(sysText, /Mcp_query/);
+      assert.match(sysText, /Mcp_call/);
+      assert.doesNotMatch(sysText, /\bmcp_query\b/);
+      assert.doesNotMatch(sysText, /\bmcp_call\b/);
+    });
+
+    it("rewrites mcp_ references in tool descriptions", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        tools: [
+          {
+            name: "mcp_query",
+            description: "Discover MCP tools. You MUST inspect a tool before calling mcp_call.",
+            input_schema: {},
+          },
+        ],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      const desc = (result.tools as Array<{ description: string }>)[0].description;
+      assert.match(desc, /Mcp_call/);
+      assert.doesNotMatch(desc, /\bmcp_call\b/);
+    });
+
+    it("accepts a string-form system prompt and rewrites references", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: "Always start by calling mcp_query.",
+        tools: [{ name: "mcp_query", description: "x", input_schema: {} }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      assert.match(result.system as string, /Mcp_query/);
+    });
+
+    it("does not rewrite references when no mcp_* tools are declared", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "The string mcp_call appears here but is irrelevant." }],
+        tools: [{ name: "my_tool", description: "x", input_schema: {} }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      const sysText = (result.system as Array<{ text: string }>)[0].text;
+      assert.match(sysText, /\bmcp_call\b/, "no mcp_ tool defined → text untouched");
+    });
+
+    it("leaves mcp__double_underscore and similar non-gate forms alone", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [
+          { type: "text", text: "Note mcp__experimental is fine; my_mcp_helper is unrelated." },
+        ],
+        tools: [{ name: "mcp_query", description: "x", input_schema: {} }],
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      const sysText = (result.system as Array<{ text: string }>)[0].text;
+      // mcp__experimental → already starts with mcp__ (double underscore), lookahead [^_] fails → untouched
+      assert.match(sysText, /mcp__experimental/);
+      // my_mcp_helper → preceded by word char, \b doesn't match → untouched
+      assert.match(sysText, /my_mcp_helper/);
+    });
+
+    it("does not mutate message content (user-supplied text is preserved)", () => {
+      const exec = new CliproxyapiExecutor();
+      const body = {
+        model: "claude-opus-4-7",
+        system: [{ type: "text", text: "x" }],
+        tools: [{ name: "mcp_query", description: "x", input_schema: {} }],
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "I ran mcp_query and got an error." }],
+          },
+        ],
+      };
+      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
+      const userText = (result.messages as Array<{ content: Array<{ text: string }> }>)[0]
+        .content[0].text;
+      // user-supplied text references mcp_query verbatim — we don't touch it.
+      assert.match(userText, /\bmcp_query\b/);
+    });
   });
 });
