@@ -17,9 +17,9 @@ const {
 
 // ─── Config Management ──────────────────────────────────────────────────────
 
-test("default config is adaptive (fork-local default)", () => {
+test("default config is passthrough (matches upstream baseline)", () => {
   const config = getThinkingBudgetConfig();
-  assert.equal(config.mode, ThinkingMode.ADAPTIVE);
+  assert.equal(config.mode, ThinkingMode.PASSTHROUGH);
 });
 
 test("setThinkingBudgetConfig updates config", () => {
@@ -240,7 +240,12 @@ test("ADAPTIVE: body.output_config.effort overrides cfg.effortLevel", () => {
   setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
 });
 
-test("ADAPTIVE: emits both thinking.budget_tokens AND output_config.effort", () => {
+test("ADAPTIVE: emits thinking.budget_tokens but does NOT inject output_config", () => {
+  // output_config.effort is a CC wire-image signal. Emitting it alongside
+  // thinking biases Anthropic toward "Claude Code agent" interpretation
+  // and makes Claude ignore client-specific tool contracts (e.g. Capy's
+  // message_user MUST). Adaptive only emits the thinking budget; clients
+  // that want the effort hint pass output_config themselves.
   setThinkingBudgetConfig({ mode: ThinkingMode.ADAPTIVE, effortLevel: "medium" });
   const body = {
     model: "claude-sonnet-4-20250514",
@@ -249,7 +254,22 @@ test("ADAPTIVE: emits both thinking.budget_tokens AND output_config.effort", () 
   const result = applyThinkingBudget(body);
   assert.equal(result.thinking.type, "enabled");
   assert.equal(result.thinking.budget_tokens, 6144);
-  assert.equal(result.output_config.effort, "medium");
+  assert.equal(result.output_config, undefined);
+  setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
+});
+
+test("ADAPTIVE: preserves client-supplied output_config without mutation", () => {
+  setThinkingBudgetConfig({ mode: ThinkingMode.ADAPTIVE, effortLevel: "medium" });
+  const body = {
+    model: "claude-sonnet-4-20250514",
+    messages: [{ role: "user", content: "hi" }],
+    output_config: { effort: "high" },
+  };
+  const result = applyThinkingBudget(body);
+  // Tier resolution still reads body.output_config.effort to pick the
+  // baseline (here "high" → 16384), but output_config is forwarded as-is.
+  assert.equal(result.thinking.budget_tokens, 16384);
+  assert.deepEqual(result.output_config, { effort: "high" });
   setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
 });
 

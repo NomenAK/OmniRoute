@@ -75,12 +75,15 @@ export const THINKING_LEVEL_MAP = {
   xhigh: 131072, // T11: explicit xhigh alias
 };
 
-// Default config: adaptive mode injects a sensible thinking budget on
-// thinking-capable models when the client sends nothing or sends an
-// invalid shape (e.g. Capy's {type:"adaptive", display:"summarized"}).
-// Fork-local default. Upstream OmniRoute ships with PASSTHROUGH.
+// Default config (passthrough = backward-compatible baseline). Adaptive
+// default was tried but biases Claude toward "CC agent" mode for BYOK
+// clients by injecting thinking.budget_tokens + output_config.effort
+// alongside CPA cloak's CC sentinel — Claude then ignores client tool
+// contracts like Capy's message_user MUST. Users who want adaptive set
+// it explicitly via Settings UI; the choice persists in DB and hydrates
+// on startup.
 export const DEFAULT_THINKING_CONFIG = {
-  mode: ThinkingMode.ADAPTIVE,
+  mode: ThinkingMode.PASSTHROUGH,
   customBudget: 10240,
   effortLevel: "medium",
 };
@@ -320,20 +323,20 @@ function setCustomBudget(body, budget) {
       result.reasoning_effort = oaiEffort;
     }
   } else {
-    // Anthropic-shape body. Emit CC wire-image fields (thinking + output_config).
+    // Anthropic-shape body. Emit `thinking` only.
+    //
+    // We intentionally do NOT inject `output_config.effort` here. That
+    // field is part of the Claude Code wire-image and biases Anthropic
+    // toward "CC agent" interpretation of the request. Combined with the
+    // CPA cloak's CC sentinel injected downstream, it makes Claude treat
+    // plain text as the visible response and ignore client-specific tool
+    // contracts (e.g. Capy's message_user MUST language). Clients that
+    // genuinely want the effort hint pass output_config themselves.
     if (result.thinking || hasThinkingCapableModel(result)) {
       result.thinking = {
         type: budget > 0 ? "enabled" : "disabled",
         budget_tokens: budget,
       };
-    }
-    if (budget > 0 && (result.thinking || hasThinkingCapableModel(result))) {
-      const oc =
-        result.output_config && typeof result.output_config === "object"
-          ? { ...(result.output_config as Record<string, unknown>) }
-          : {};
-      oc.effort = effortTier === "none" ? "low" : effortTier;
-      result.output_config = oc;
     }
   }
 

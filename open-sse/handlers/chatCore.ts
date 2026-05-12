@@ -2561,16 +2561,16 @@ export async function handleChatCore({
       // payloads at high context (150+ msgs, 100+ tools). Fix: #1359.
       // Claude Code sends well-formed Messages API payloads — trust them
       // regardless of combo strategy or cache_control settings.
+      //
+      // No applyThinkingBudget here: upgrading client shapes (e.g. Capy's
+      // {type:"adaptive", display:"summarized"}) to {type:"enabled",budget_tokens:N}
+      // + injecting output_config.effort gives Anthropic the full Claude Code
+      // wire-image signature, which biases Claude toward "CC agent" mode and
+      // makes it ignore client-specific tool contracts (e.g. message_user MUST).
+      // Downstream cliproxyapi.transformRequest silently strips invalid Capy
+      // SDK extras (display/effort:max) so Anthropic receives a clean body.
       translatedBody = { ...body };
       translatedBody._disableToolPrefix = true;
-      // Phase 2: Apply thinking budget control here too. translateRequest
-      // (which normally runs applyThinkingBudget at the head of the pipeline)
-      // is skipped in passthrough mode, so we must invoke the service
-      // directly. Without this, client-side adaptive/level shapes
-      // (e.g. Capy's thinking:{type:"adaptive", display:"summarized"}) reach
-      // Anthropic untranslated and get either 400'd or silently dropped
-      // downstream (cliproxyapi conditional strip).
-      translatedBody = applyThinkingBudget(translatedBody);
       normalizeClaudeUpstreamMessages(translatedBody, { preserveToolResultBlocks: true });
 
       log?.debug?.("FORMAT", `claude passthrough (preserveCache=${preserveCacheControl})`);
