@@ -106,7 +106,7 @@ test("CUSTOM: sets Claude budget", () => {
   setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
 });
 
-test("CUSTOM: sets OpenAI reasoning_effort from budget", () => {
+test("CUSTOM: sets OpenAI reasoning_effort from budget (clamped, no Anthropic leak)", () => {
   setThinkingBudgetConfig({ mode: ThinkingMode.CUSTOM, customBudget: 131072 });
   const body = {
     model: "o3-mini",
@@ -114,7 +114,43 @@ test("CUSTOM: sets OpenAI reasoning_effort from budget", () => {
     reasoning_effort: "low",
   };
   const result = applyThinkingBudget(body);
-  assert.equal(result.reasoning_effort, "xhigh");
+  // OpenAI Chat Completions reasoning_effort accepts low|medium|high.
+  // xhigh/max are CC wire-image-only labels and are clamped to high
+  // when emitted onto OpenAI-shape bodies.
+  assert.equal(result.reasoning_effort, "high");
+  // No Anthropic-shape leak onto OpenAI-shape body (regression: Codex 400
+  // "Unsupported parameter: thinking" if these fields appear).
+  assert.equal(result.thinking, undefined);
+  assert.equal(result.output_config, undefined);
+  setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
+});
+
+test("CUSTOM: OpenAI Responses shape (reasoning object) gets reasoning.effort, no thinking", () => {
+  setThinkingBudgetConfig({ mode: ThinkingMode.CUSTOM, customBudget: 16384 });
+  const body = {
+    model: "gpt-5.5",
+    input: [{ role: "user", content: "hello" }],
+    instructions: "be helpful",
+    reasoning: { effort: "medium", summary: "auto" },
+  };
+  const result = applyThinkingBudget(body);
+  assert.deepEqual(result.reasoning, { effort: "high", summary: "auto" });
+  assert.equal(result.thinking, undefined);
+  assert.equal(result.output_config, undefined);
+  setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
+});
+
+test("CUSTOM: codex passthrough body never gets Anthropic thinking injected", () => {
+  setThinkingBudgetConfig({ mode: ThinkingMode.CUSTOM, customBudget: 16384 });
+  const body = {
+    model: "gpt-5.5",
+    input: [{ role: "user", content: "hi" }],
+    reasoning: { effort: "medium", summary: "auto" },
+    _nativeCodexPassthrough: true,
+  };
+  const result = applyThinkingBudget(body);
+  assert.equal(result.thinking, undefined);
+  assert.equal(result.output_config, undefined);
   setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
 });
 

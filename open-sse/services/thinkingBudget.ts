@@ -260,49 +260,88 @@ function stripThinkingConfig(body) {
 }
 
 /**
- * CUSTOM mode: set exact budget tokens. Also emits the matching effort
- * tier label on output_config so CC wire-image targets get a complete
- * thinking declaration (both fields).
+ * Detect whether a body is in OpenAI/Codex Responses API shape.
+ * Indicators (any one is decisive):
+ *   - `_nativeCodexPassthrough` marker (set by chatCore for codex routes)
+ *   - `input` array (Responses API uses `input`, not `messages`)
+ *   - `instructions` string (Responses API top-level system prompt)
+ *   - `reasoning` object (`{effort, summary}` — Responses API shape)
+ *   - `reasoning_effort` string (Chat Completions reasoning hint)
+ *
+ * Anthropic `thinking` and CC wire-image `output_config` fields must NOT
+ * be injected into these bodies — Codex returns 400 "Unsupported parameter:
+ * thinking". OpenAI Chat Completions ignores them but they still leak
+ * Anthropic-only fields to non-Anthropic providers (DeepSeek, etc).
+ */
+function isOpenAIShape(body: Record<string, unknown>): boolean {
+  if (body._nativeCodexPassthrough === true) return true;
+  if (Array.isArray(body.input)) return true;
+  if (typeof body.instructions === "string") return true;
+  if (body.reasoning && typeof body.reasoning === "object") return true;
+  if (typeof body.reasoning_effort === "string") return true;
+  return false;
+}
+
+/**
+ * CUSTOM mode: set exact budget tokens. Shape-aware emission:
+ *   - Anthropic-shape bodies → emit `thinking` + `output_config` (CC wire-image)
+ *   - OpenAI/Codex-shape bodies → emit `reasoning_effort` / `reasoning.effort` only
+ *
+ * Pre-rebase, this function unconditionally injected Anthropic-shape fields
+ * whenever the model was thinking-capable, which broke GPT-5.5 routes
+ * (Codex returns 400 "Unsupported parameter: thinking"). The shape check
+ * keeps each provider's body clean.
  */
 function setCustomBudget(body, budget) {
-  const result = { ...body };
+  const result = { ...body } as Record<string, unknown>;
   const effortTier = budgetToEffortTier(budget);
+  const isOAI = isOpenAIShape(result);
 
-  // Claude thinking: emit enabled/disabled with explicit budget_tokens
-  if (result.thinking || hasThinkingCapableModel(result)) {
-    result.thinking = {
-      type: budget > 0 ? "enabled" : "disabled",
-      budget_tokens: budget,
-    };
-  }
+  if (isOAI) {
+    // OpenAI/Codex Responses or Chat Completions reasoning_effort mapping.
+    // Codex accepts low/medium/high (not xhigh/max — those are CC-only labels).
+    // Strip any leaked Anthropic-shape fields from upstream code paths.
+    delete result.thinking;
+    delete result.output_config;
 
-  // CC wire-image output_config.effort: emit alongside thinking so
-  // Anthropic-OAuth (Claude Code path) receives both signals.
-  // Only inject for thinking-capable models when budget > 0.
-  if (budget > 0 && (result.thinking || hasThinkingCapableModel(result))) {
-    const oc =
-      result.output_config && typeof result.output_config === "object"
-        ? { ...(result.output_config as Record<string, unknown>) }
-        : {};
-    oc.effort = effortTier === "none" ? "low" : effortTier;
-    result.output_config = oc;
-  }
+    const oaiEffort =
+      effortTier === "none"
+        ? "low"
+        : effortTier === "xhigh" || effortTier === "max"
+          ? "high"
+          : effortTier;
 
-  // OpenAI reasoning_effort mapping.
-  // GPT-5/Codex accepts xhigh for the top tier; keep full budget aligned.
-  if (result.reasoning_effort !== undefined || result.reasoning !== undefined) {
     if (budget <= 0) {
       delete result.reasoning_effort;
       delete result.reasoning;
-    } else {
-      result.reasoning_effort = effortTier === "none" ? "low" : effortTier;
+    } else if (result.reasoning && typeof result.reasoning === "object") {
+      result.reasoning = { ...(result.reasoning as Record<string, unknown>), effort: oaiEffort };
+    } else if (result.reasoning_effort !== undefined || result._nativeCodexPassthrough === true) {
+      result.reasoning_effort = oaiEffort;
+    }
+  } else {
+    // Anthropic-shape body. Emit CC wire-image fields (thinking + output_config).
+    if (result.thinking || hasThinkingCapableModel(result)) {
+      result.thinking = {
+        type: budget > 0 ? "enabled" : "disabled",
+        budget_tokens: budget,
+      };
+    }
+    if (budget > 0 && (result.thinking || hasThinkingCapableModel(result))) {
+      const oc =
+        result.output_config && typeof result.output_config === "object"
+          ? { ...(result.output_config as Record<string, unknown>) }
+          : {};
+      oc.effort = effortTier === "none" ? "low" : effortTier;
+      result.output_config = oc;
     }
   }
 
-  // Gemini thinking_config
-  if (result.generationConfig?.thinking_config || result.generationConfig?.thinkingConfig) {
+  // Gemini thinking_config (applies regardless of OAI/Anthropic shape)
+  const gen = (result as { generationConfig?: Record<string, unknown> }).generationConfig;
+  if (gen?.thinking_config || gen?.thinkingConfig) {
     result.generationConfig = {
-      ...result.generationConfig,
+      ...gen,
       thinking_config: { thinking_budget: budget },
     };
   }
