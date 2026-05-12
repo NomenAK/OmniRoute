@@ -38,15 +38,6 @@ const HEALTH_CHECK_TIMEOUT_MS = 5000;
 // that's patched CPA-side, we rewrite the tool name to dodge the gate.
 const MCP_RESERVED_PREFIX_RE = /^mcp_(?=[^_])/;
 
-// Single source-of-truth transformation: `mcp_X` → `Mcp_X`. Applied both
-// to tool names (so the gate doesn't fire) AND to every textual reference
-// (system prompt blocks + tool descriptions) so the model sees a
-// consistent naming scheme. Without the text rewrite, the model reads
-// "use mcp_call" in the prompt but only finds `Mcp_call` in the tool
-// catalog and falls back to plain-text responses, breaking tool calling.
-const MCP_NAME_REF_RE = /\bmcp_(?=[^_\s])/g;
-const mcpRewriteOf = (s: string): string => s.replace(MCP_NAME_REF_RE, "Mcp_");
-
 function rewriteMcpToolName(name: string): string | null {
   // Diagnostic toggle: OMNIROUTE_DISABLE_MCP_REWRITE=1 bypasses the
   // rewrite to probe whether the gate fires in the current cloak context.
@@ -128,32 +119,11 @@ function applyMcpToolNameRewrite(body: Record<string, unknown>): Map<string, str
     }
   }
 
-  // If we rewrote any tool name, apply the same regex transformation to
-  // textual references in the system prompt + tool descriptions so the
-  // model sees consistent naming. Single-pass regex matches the same
-  // pattern used on the tool names themselves — no need to enumerate the
-  // rewritten name set explicitly.
-  if (reverseMap.size > 0) {
-    const sys = body.system;
-    if (typeof sys === "string") {
-      body.system = mcpRewriteOf(sys);
-    } else if (Array.isArray(sys)) {
-      body.system = sys.map((block) => {
-        if (block && typeof block === "object") {
-          const b = block as Record<string, unknown>;
-          if (typeof b.text === "string") return { ...b, text: mcpRewriteOf(b.text) };
-        }
-        return block;
-      });
-    }
-    if (Array.isArray(body.tools)) {
-      body.tools = (body.tools as Array<Record<string, unknown>>).map((t) =>
-        t && typeof t === "object" && typeof t.description === "string"
-          ? { ...t, description: mcpRewriteOf(t.description) }
-          : t
-      );
-    }
-  }
+  // No prose rewrite: bisect 2026-05-12 confirmed the model handles
+  // name-only rewrite without needing matching mcp_ → Mcp_ substitution
+  // in system prompts and tool descriptions. Previous prose pass added
+  // edit-distance noise to client prompts without a benefit measurable
+  // in tool-calling behavior.
 
   return reverseMap;
 }
