@@ -130,6 +130,11 @@ describe("CliproxyapiExecutor", () => {
       assert.equal(result, null);
     });
 
+    // After 2026-05-12 bisect: Anthropic accepts the full range of
+    // thinking/output_config/context_management shapes intact alongside
+    // the CPA cloak. transformRequest no longer strips any of these; it
+    // only rewrites mcp_ tool names. The cases below assert passthrough.
+
     it("preserves Anthropic-valid thinking shape on /v1/messages routing", () => {
       const exec = new CliproxyapiExecutor();
       const body = {
@@ -154,7 +159,9 @@ describe("CliproxyapiExecutor", () => {
       assert.deepEqual(result.thinking, { type: "disabled", budget_tokens: 0 });
     });
 
-    it("strips Capy-style adaptive thinking on /v1/messages routing", () => {
+    it("passes Capy SDK adaptive thinking shape through verbatim", () => {
+      // Was previously stripped (display:summarized triggered the strip);
+      // bisect 2026-05-12 confirmed Anthropic accepts this shape intact.
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "claude-opus-4-7",
@@ -163,10 +170,10 @@ describe("CliproxyapiExecutor", () => {
         thinking: { type: "adaptive", display: "summarized" },
       };
       const result = exec.transformRequest("claude-opus-4-7", body, true, {});
-      assert.equal(result.thinking, undefined);
+      assert.deepEqual(result.thinking, { type: "adaptive", display: "summarized" });
     });
 
-    it("strips thinking carrying display field even with enabled type", () => {
+    it("passes thinking with display extra through even on enabled type", () => {
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "claude-opus-4-7",
@@ -175,10 +182,14 @@ describe("CliproxyapiExecutor", () => {
         thinking: { type: "enabled", budget_tokens: 10240, display: "summarized" },
       };
       const result = exec.transformRequest("claude-opus-4-7", body, true, {});
-      assert.equal(result.thinking, undefined);
+      assert.deepEqual(result.thinking, {
+        type: "enabled",
+        budget_tokens: 10240,
+        display: "summarized",
+      });
     });
 
-    it("strips raw Capy-style output_config and context_management", () => {
+    it("passes Capy SDK output_config and context_management through verbatim", () => {
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "claude-opus-4-7",
@@ -188,11 +199,11 @@ describe("CliproxyapiExecutor", () => {
         context_management: { auto_summarize: true },
       };
       const result = exec.transformRequest("claude-opus-4-7", body, true, {});
-      assert.equal(result.output_config, undefined);
-      assert.equal(result.context_management, undefined);
+      assert.deepEqual(result.output_config, { effort: "max" });
+      assert.deepEqual(result.context_management, { auto_summarize: true });
     });
 
-    it("preserves CC-spec output_config {effort:'xhigh'} for top-tier models", () => {
+    it("passes CC-spec output_config {effort:'xhigh'} through unchanged", () => {
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "claude-opus-4-7",
@@ -204,19 +215,7 @@ describe("CliproxyapiExecutor", () => {
       assert.deepEqual(result.output_config, { effort: "xhigh" });
     });
 
-    it("preserves CC-spec output_config {effort:'high'}", () => {
-      const exec = new CliproxyapiExecutor();
-      const body = {
-        model: "claude-opus-4-7",
-        system: [{ type: "text", text: "x" }],
-        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-        output_config: { effort: "high" },
-      };
-      const result = exec.transformRequest("claude-opus-4-7", body, true, {});
-      assert.deepEqual(result.output_config, { effort: "high" });
-    });
-
-    it("preserves CC-spec context_management with clear_thinking edit", () => {
+    it("passes CC-spec context_management.edits through unchanged", () => {
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "claude-opus-4-7",
@@ -230,7 +229,7 @@ describe("CliproxyapiExecutor", () => {
       });
     });
 
-    it("preserves CC-spec adaptive thinking {type:'adaptive'} without display", () => {
+    it("passes adaptive thinking {type:'adaptive'} (without display) unchanged", () => {
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "claude-opus-4-7",
@@ -376,37 +375,44 @@ describe("CliproxyapiExecutor", () => {
     });
 
     it("detects Anthropic-shape when messages[0].content is an array (no system field)", () => {
+      // Observable: mcp_ tool-name rewrite only runs on Anthropic-shape
+      // bodies, and posts a `_toolNameMap` field on the result. We use
+      // that as a proxy signal for "detection took the Anthropic branch".
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "claude-opus-4-7",
         messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-        output_config: { effort: "max" },
+        tools: [{ name: "mcp_filesystem_read", description: "d", input_schema: {} }],
       };
       const result = exec.transformRequest("claude-opus-4-7", body, true, {});
-      assert.equal(
-        result.output_config,
-        undefined,
-        "output_config should be stripped for Anthropic-shape"
+      assert.ok(
+        result._toolNameMap,
+        "Anthropic-shape branch must run the mcp_ rewrite (signature observable)"
       );
     });
 
     it("treats OpenAI-shape (string content, no system) as non-Anthropic passthrough", () => {
+      // OpenAI-shape bodies do not enter the mcp_ rewrite branch: tool
+      // names pass through, no _toolNameMap is set.
       const exec = new CliproxyapiExecutor();
       const body = {
         model: "gpt-5.5",
         messages: [{ role: "user", content: "hi" }],
-        output_config: { effort: "max" },
+        tools: [{ name: "mcp_filesystem_read", description: "d", input_schema: {} }],
       };
       const result = exec.transformRequest("gpt-5.5", body, true, {});
-      assert.deepEqual(
-        result.output_config,
-        { effort: "max" },
-        "output_config preserved for OpenAI-shape"
-      );
+      assert.equal(result._toolNameMap, undefined);
+      const toolName = (result.tools as Array<{ name: string }>)[0].name;
+      assert.equal(toolName, "mcp_filesystem_read");
     });
   });
 
-  describe("Capy extras strip on Anthropic-shape bodies", () => {
+  describe("Capy SDK extras passthrough on Anthropic-shape bodies", () => {
+    // Bisect 2026-05-12 (11 variants × 2 turns + 5-turn stress) confirmed
+    // Anthropic accepts these fields intact through the CPA cloak. The
+    // previous unconditional strip was over-engineered preemptive defense
+    // that silently dropped valid client content.
+
     function anthropicBody(extras: Record<string, unknown>) {
       return {
         model: "claude-opus-4-7",
@@ -416,7 +422,7 @@ describe("CliproxyapiExecutor", () => {
       };
     }
 
-    it("strips output_config", () => {
+    it("passes output_config:{effort:'max'} through verbatim", () => {
       const exec = new CliproxyapiExecutor();
       const result = exec.transformRequest(
         "claude-opus-4-7",
@@ -424,21 +430,10 @@ describe("CliproxyapiExecutor", () => {
         true,
         {}
       );
-      assert.equal(result.output_config, undefined);
+      assert.deepEqual(result.output_config, { effort: "max" });
     });
 
-    it("preserves bare metadata {user_id} for CPA cloak-seed cooperation", () => {
-      const exec = new CliproxyapiExecutor();
-      const result = exec.transformRequest(
-        "claude-opus-4-7",
-        anthropicBody({ metadata: { user_id: "user_3DGta5gz" } }),
-        true,
-        {}
-      );
-      assert.deepEqual(result.metadata, { user_id: "user_3DGta5gz" });
-    });
-
-    it("strips metadata when it carries Capy extras beyond user_id", () => {
+    it("passes metadata with any keys through verbatim", () => {
       const exec = new CliproxyapiExecutor();
       const result = exec.transformRequest(
         "claude-opus-4-7",
@@ -446,10 +441,14 @@ describe("CliproxyapiExecutor", () => {
         true,
         {}
       );
-      assert.equal(result.metadata, undefined);
+      assert.deepEqual(result.metadata, {
+        user_id: "abc",
+        session_id: "s1",
+        extra: 1,
+      });
     });
 
-    it("strips client_info", () => {
+    it("passes client_info through", () => {
       const exec = new CliproxyapiExecutor();
       const result = exec.transformRequest(
         "claude-opus-4-7",
@@ -457,10 +456,10 @@ describe("CliproxyapiExecutor", () => {
         true,
         {}
       );
-      assert.equal(result.client_info, undefined);
+      assert.deepEqual(result.client_info, { name: "Capy" });
     });
 
-    it("strips prompt_cache_key", () => {
+    it("passes prompt_cache_key through", () => {
       const exec = new CliproxyapiExecutor();
       const result = exec.transformRequest(
         "claude-opus-4-7",
@@ -468,10 +467,10 @@ describe("CliproxyapiExecutor", () => {
         true,
         {}
       );
-      assert.equal(result.prompt_cache_key, undefined);
+      assert.equal(result.prompt_cache_key, "key123");
     });
 
-    it("strips safety_identifier", () => {
+    it("passes safety_identifier through", () => {
       const exec = new CliproxyapiExecutor();
       const result = exec.transformRequest(
         "claude-opus-4-7",
@@ -479,7 +478,7 @@ describe("CliproxyapiExecutor", () => {
         true,
         {}
       );
-      assert.equal(result.safety_identifier, undefined);
+      assert.equal(result.safety_identifier, "sid");
     });
   });
 
