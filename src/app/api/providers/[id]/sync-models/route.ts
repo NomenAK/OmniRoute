@@ -186,7 +186,8 @@ export async function ensureLoopbackServerReady(opts: EnsureReadyOptions = {}): 
         // readiness — we only care that the dispatcher succeeds (no
         // ECONNREFUSED). Using a synthetic connection id so no real DB lookup
         // is needed; the 404 is sufficient proof the server is dispatching.
-        const res = await f("http://127.0.0.1:20128/api/providers/__readiness_probe__/models", {
+        const probePort = process.env.OMNIROUTE_PORT || process.env.PORT || "20128";
+        const res = await f(`http://127.0.0.1:${probePort}/api/providers/__readiness_probe__/models`, {
           signal: AbortSignal.timeout(2_000),
         });
         if (res.status >= 200 && res.status < 600) return;
@@ -246,10 +247,10 @@ export type SelfFetchWithRetryOptions = {
  * a last-resort for transient failures AFTER the server is confirmed up.
  *
  * Retry contract:
- * - Network errors (fetch failed, ECONNREFUSED): always retry.
- * - HTTP 5xx: treated as transient — retry.
- * - HTTP 4xx: treated as definitive — skip remaining retries and fall back.
- * - HTTP 2xx: success — return immediately.
+ * - Network errors (fetch failed, ECONNREFUSED): retry up to `maxRetries`.
+ * - Any HTTP response (2xx/4xx/5xx): returned as-is — the server is up, so the
+ *   caller (route handler) handles status interpretation. Retries are only
+ *   for network-level failures, not for HTTP errors.
  */
 export async function selfFetchWithRetry(
   url: string,
@@ -296,7 +297,7 @@ export async function selfFetchWithRetry(
     }
   }
 
-  // All retries exhausted (or 4xx short-circuit) — fall back to in-process route
+  // All retries exhausted (network-level failures only) — fall back to in-process route
   console.warn(
     `[ModelSync] Internal /models self-fetch failed for ${connLabel} after ${maxRetries} attempt(s); falling back to in-process route (last err: ${String(lastErr)})`
   );
