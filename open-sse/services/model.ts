@@ -452,9 +452,9 @@ export async function getModelInfoCore(modelStr, aliasesOrGetter) {
   // immediately — before shouldTreatAsExactModelId() or cross-proxy inference
   // can misclassify the target (e.g. because bazaarlink catalogs it verbatim).
   if (aliases && parsed.model && typeof aliases[parsed.model] === "string") {
-    const directTarget = aliases[parsed.model] as string;
-    if (directTarget.includes("/")) {
-      const slashIdx = directTarget.indexOf("/");
+    const directTarget = aliases[parsed.model];
+    const slashIdx = directTarget.indexOf("/");
+    if (slashIdx !== -1) {
       const providerPart = directTarget.slice(0, slashIdx);
       const modelPart = directTarget.slice(slashIdx + 1);
       const provider = resolveProviderAlias(providerPart);
