@@ -20,7 +20,9 @@ import {
   supportsReasoning,
 } from "@/lib/modelCapabilities";
 
-// Effort → budget token mapping
+// Effort → budget token mapping (legacy; kept for backward compat with CUSTOM
+// reverse-mapping and OpenAI bucket fallbacks). Adaptive uses
+// EFFORT_BASELINES (below) for its tier-scaled starting points.
 export const EFFORT_BUDGETS = {
   none: 0,
   low: 1024,
@@ -29,6 +31,38 @@ export const EFFORT_BUDGETS = {
   max: 131072, // T11: Claude "max" / "xhigh" — full budget
   xhigh: 131072, // T11: explicit alias used internally
 };
+
+// 5-tier effort baselines used by ADAPTIVE mode. The starting budget for
+// each tier is multiplied by the adaptive signal multiplier (1.0×–2.8×)
+// then capped by the per-model thinkingBudgetCap. Anthropic accepts the
+// same 5 labels in CC wire-image `output_config.effort`, so adaptive
+// emits BOTH the tier label AND the computed budget_tokens.
+export const EFFORT_BASELINES: Record<string, number> = {
+  none: 0,
+  low: 2048,
+  medium: 6144,
+  high: 16384,
+  xhigh: 32768,
+  max: 65536, // Subject to model cap
+};
+
+// Legacy export kept for any imports — adaptive default tier is medium.
+export const ADAPTIVE_BASE_BUDGET = EFFORT_BASELINES.medium;
+
+/**
+ * Map a numeric budget back to the closest CC-spec effort label.
+ * Used to emit output_config.effort alongside thinking.budget_tokens.
+ * Wire-spec only includes low/medium/high/xhigh — "max" is a settings
+ * label that maps to "xhigh" on the wire (Anthropic CC + OpenAI both
+ * top out at xhigh).
+ */
+export function budgetToEffortTier(budget: number): string {
+  if (budget <= 0) return "none";
+  if (budget <= EFFORT_BASELINES.low) return "low";
+  if (budget <= EFFORT_BASELINES.medium) return "medium";
+  if (budget <= EFFORT_BASELINES.high) return "high";
+  return "xhigh";
+}
 
 // thinkingLevel string → budget token mapping
 // Used when clients send string-based thinking levels (e.g., VS Code Copilot)
@@ -41,28 +75,46 @@ export const THINKING_LEVEL_MAP = {
   xhigh: 131072, // T11: explicit xhigh alias
 };
 
-// Default config (passthrough = backward compatible)
+// Default config (passthrough = backward-compatible baseline). Adaptive
+// default was tried but biases Claude toward "CC agent" mode for BYOK
+// clients by injecting thinking.budget_tokens + output_config.effort
+// alongside CPA cloak's CC sentinel — Claude then ignores client tool
+// contracts like Capy's message_user MUST. Users who want adaptive set
+// it explicitly via Settings UI; the choice persists in DB and hydrates
+// on startup.
 export const DEFAULT_THINKING_CONFIG = {
   mode: ThinkingMode.PASSTHROUGH,
   customBudget: 10240,
   effortLevel: "medium",
 };
 
-// In-memory config (loaded from DB on startup, or default)
-let _config = { ...DEFAULT_THINKING_CONFIG };
+// In-memory config anchored on globalThis via Symbol.for so all Next.js
+// bundles (server, edge, route handlers, open-sse handlers) share the
+// same instance. Otherwise each bundle gets its own module-level _config
+// and updates made via the settings API or startup hydration are
+// invisible to applyThinkingBudget when called from a different bundle.
+const _CONFIG_KEY = Symbol.for("omniroute.thinkingBudget._config");
+type ThinkingConfig = { mode: string; customBudget: number; effortLevel: string };
+
+function _getConfig(): ThinkingConfig {
+  const g = globalThis as unknown as Record<symbol, ThinkingConfig>;
+  if (!g[_CONFIG_KEY]) g[_CONFIG_KEY] = { ...DEFAULT_THINKING_CONFIG };
+  return g[_CONFIG_KEY];
+}
 
 /**
  * Set the thinking budget config (called from settings API or startup)
  */
 export function setThinkingBudgetConfig(config) {
-  _config = { ...DEFAULT_THINKING_CONFIG, ...config };
+  const g = globalThis as unknown as Record<symbol, ThinkingConfig>;
+  g[_CONFIG_KEY] = { ...DEFAULT_THINKING_CONFIG, ...config };
 }
 
 /**
  * Get current thinking budget config
  */
 export function getThinkingBudgetConfig() {
-  return { ..._config };
+  return { ..._getConfig() };
 }
 
 /**
@@ -153,7 +205,7 @@ export function ensureThinkingConfig(body) {
  * @returns {object} Modified body
  */
 export function applyThinkingBudget(body, config = null) {
-  const cfg = config || _config;
+  const cfg = config || _getConfig();
   if (!body || typeof body !== "object") return body;
 
   // Early exit: strip ALL reasoning/thinking params for models that don't support them.
@@ -211,40 +263,88 @@ function stripThinkingConfig(body) {
 }
 
 /**
- * CUSTOM mode: set exact budget tokens
+ * Detect whether a body is in OpenAI/Codex Responses API shape.
+ * Indicators (any one is decisive):
+ *   - `_nativeCodexPassthrough` marker (set by chatCore for codex routes)
+ *   - `input` array (Responses API uses `input`, not `messages`)
+ *   - `instructions` string (Responses API top-level system prompt)
+ *   - `reasoning` object (`{effort, summary}` — Responses API shape)
+ *   - `reasoning_effort` string (Chat Completions reasoning hint)
+ *
+ * Anthropic `thinking` and CC wire-image `output_config` fields must NOT
+ * be injected into these bodies — Codex returns 400 "Unsupported parameter:
+ * thinking". OpenAI Chat Completions ignores them but they still leak
+ * Anthropic-only fields to non-Anthropic providers (DeepSeek, etc).
+ */
+function isOpenAIShape(body: Record<string, unknown>): boolean {
+  if (body._nativeCodexPassthrough === true) return true;
+  if (Array.isArray(body.input)) return true;
+  if (typeof body.instructions === "string") return true;
+  if (body.reasoning && typeof body.reasoning === "object") return true;
+  if (typeof body.reasoning_effort === "string") return true;
+  return false;
+}
+
+/**
+ * CUSTOM mode: set exact budget tokens. Shape-aware emission:
+ *   - Anthropic-shape bodies → emit `thinking` + `output_config` (CC wire-image)
+ *   - OpenAI/Codex-shape bodies → emit `reasoning_effort` / `reasoning.effort` only
+ *
+ * Pre-rebase, this function unconditionally injected Anthropic-shape fields
+ * whenever the model was thinking-capable, which broke GPT-5.5 routes
+ * (Codex returns 400 "Unsupported parameter: thinking"). The shape check
+ * keeps each provider's body clean.
  */
 function setCustomBudget(body, budget) {
-  const result = { ...body };
+  const result = { ...body } as Record<string, unknown>;
+  const effortTier = budgetToEffortTier(budget);
+  const isOAI = isOpenAIShape(result);
 
-  // If body already has thinking config in Claude format, update it
-  if (result.thinking || hasThinkingCapableModel(result)) {
-    result.thinking = {
-      type: budget > 0 ? "enabled" : "disabled",
-      budget_tokens: budget,
-    };
-  }
+  if (isOAI) {
+    // OpenAI/Codex Responses or Chat Completions reasoning_effort mapping.
+    // Codex accepts low/medium/high (not xhigh/max — those are CC-only labels).
+    // Strip any leaked Anthropic-shape fields from upstream code paths.
+    delete result.thinking;
+    delete result.output_config;
 
-  // OpenAI reasoning_effort mapping.
-  // GPT-5/Codex accepts xhigh for the top tier; keep full budget aligned.
-  if (result.reasoning_effort !== undefined || result.reasoning !== undefined) {
+    const oaiEffort =
+      effortTier === "none"
+        ? "low"
+        : effortTier === "xhigh" || effortTier === "max"
+          ? "high"
+          : effortTier;
+
     if (budget <= 0) {
       delete result.reasoning_effort;
       delete result.reasoning;
-    } else if (budget <= 1024) {
-      result.reasoning_effort = "low";
-    } else if (budget <= 10240) {
-      result.reasoning_effort = "medium";
-    } else if (budget < 131072) {
-      result.reasoning_effort = "high";
-    } else {
-      result.reasoning_effort = "xhigh";
+    } else if (result.reasoning && typeof result.reasoning === "object") {
+      result.reasoning = { ...(result.reasoning as Record<string, unknown>), effort: oaiEffort };
+    } else if (result.reasoning_effort !== undefined || result._nativeCodexPassthrough === true) {
+      result.reasoning_effort = oaiEffort;
+    }
+  } else {
+    // Anthropic-shape body. Emit `thinking` only.
+    //
+    // We intentionally do NOT inject `output_config.effort` here. That
+    // field is part of the Claude Code wire-image and biases Anthropic
+    // toward "CC agent" interpretation of the request. Combined with the
+    // CPA cloak's CC sentinel injected downstream, it makes Claude treat
+    // plain text as the visible response and ignore client-specific tool
+    // contracts (e.g. Capy's message_user MUST language). Clients that
+    // genuinely want the effort hint pass output_config themselves.
+    if (result.thinking || hasThinkingCapableModel(result)) {
+      result.thinking = {
+        type: budget > 0 ? "enabled" : "disabled",
+        budget_tokens: budget,
+      };
     }
   }
 
-  // Gemini thinking_config
-  if (result.generationConfig?.thinking_config || result.generationConfig?.thinkingConfig) {
+  // Gemini thinking_config (applies regardless of OAI/Anthropic shape)
+  const gen = (result as { generationConfig?: Record<string, unknown> }).generationConfig;
+  if (gen?.thinking_config || gen?.thinkingConfig) {
     result.generationConfig = {
-      ...result.generationConfig,
+      ...gen,
       thinking_config: { thinking_budget: budget },
     };
   }
@@ -253,7 +353,26 @@ function setCustomBudget(body, budget) {
 }
 
 /**
- * ADAPTIVE mode: scale budget based on request complexity
+ * ADAPTIVE mode: scale budget based on the requested effort tier +
+ * complexity signals.
+ *
+ * Effort tier priority:
+ *   1. body.output_config.effort (CC wire-image input)
+ *   2. cfg.effortLevel (settings UI)
+ *   3. "medium" (default)
+ *
+ * Tier baselines (EFFORT_BASELINES): low=2K, medium=6K, high=16K,
+ * xhigh=32K, max=64K. Then signals stack a multiplier on top.
+ *
+ * Signals (cumulative multiplier on top of base 1.0):
+ *   - messageCount > 10                          → +0.5  (long conversation)
+ *   - toolCount > 3                              → +0.5  (tool-heavy session)
+ *   - lastMsgLength > 2000                       → +0.3  (verbose last user turn)
+ *   - tool_use blocks in last 5 messages         → +0.3  (agentic in-flight)
+ *   - tool_result with is_error / "error" text   → +0.2  (retry implies more reasoning)
+ *
+ * Max multiplier ~2.8× (all signals firing). Final budget capped per
+ * model by capThinkingBudget.
  */
 function applyAdaptiveBudget(body, cfg) {
   const messages = body.messages || body.input || [];
@@ -274,16 +393,63 @@ function applyAdaptiveBudget(body, cfg) {
     }
   }
 
+  // Content-aware signals: scan last 5 messages for tool_use blocks
+  // (Claude shape: content[].type==="tool_use" ; OpenAI shape: msg.tool_calls)
+  // and for error-flagged tool_result blocks.
+  const recentSlice = messages.slice(-5);
+  let hasRecentToolUse = false;
+  let hasErrorToolResult = false;
+  const ERROR_TEXT_RE = /\b(error|exception|failed|traceback|stderr)\b/i;
+  for (const msg of recentSlice) {
+    if (!msg || typeof msg !== "object") continue;
+    if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      hasRecentToolUse = true;
+    }
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (!block || typeof block !== "object") continue;
+        if (block.type === "tool_use") hasRecentToolUse = true;
+        if (block.type === "tool_result") {
+          if (block.is_error === true) {
+            hasErrorToolResult = true;
+            continue;
+          }
+          const content = block.content;
+          const text =
+            typeof content === "string"
+              ? content
+              : Array.isArray(content)
+                ? content.map((c) => (c && typeof c.text === "string" ? c.text : "")).join(" ")
+                : "";
+          if (ERROR_TEXT_RE.test(text)) hasErrorToolResult = true;
+        }
+      }
+    }
+  }
+
   // Calculate multiplier
   let multiplier = 1.0;
   if (messageCount > 10) multiplier += 0.5;
   if (toolCount > 3) multiplier += 0.5;
   if (lastMsgLength > 2000) multiplier += 0.3;
+  if (hasRecentToolUse) multiplier += 0.3;
+  if (hasErrorToolResult) multiplier += 0.2;
 
-  const baseBudget =
-    EFFORT_BUDGETS[cfg.effortLevel] ||
-    getDefaultThinkingBudget(body.model || "") ||
-    EFFORT_BUDGETS.medium;
+  // Resolve effort tier baseline.
+  // Priority: body.output_config.effort > cfg.effortLevel > "medium".
+  const bodyEffort =
+    body.output_config && typeof body.output_config === "object"
+      ? (body.output_config as Record<string, unknown>).effort
+      : undefined;
+  const tier =
+    (typeof bodyEffort === "string" && EFFORT_BASELINES[bodyEffort.toLowerCase()] !== undefined
+      ? bodyEffort.toLowerCase()
+      : null) ||
+    (typeof cfg.effortLevel === "string" && EFFORT_BASELINES[cfg.effortLevel] !== undefined
+      ? cfg.effortLevel
+      : null) ||
+    "medium";
+  const baseBudget = EFFORT_BASELINES[tier] ?? EFFORT_BASELINES.medium;
   const budget = capThinkingBudget(body.model || "", Math.ceil(baseBudget * multiplier));
 
   return setCustomBudget(body, budget);

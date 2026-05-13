@@ -1,5 +1,6 @@
 import { HTTP_STATUS, FETCH_TIMEOUT_MS } from "../config/constants.ts";
 import { applyFingerprint, isCliCompatEnabled } from "../config/cliFingerprints.ts";
+import { supportsXHighEffort } from "../config/providerModels.ts";
 import { getRotatingApiKey } from "../services/apiKeyRotator.ts";
 import { getOpenAICompatibleType, isClaudeCodeCompatible } from "../services/provider.ts";
 import type { ProviderRequestDefaults } from "../services/providerRequestDefaults.ts";
@@ -10,7 +11,10 @@ import {
   modelSupportsContext1mBeta,
 } from "../services/claudeCodeCompatible.ts";
 import { getClaudeCodeCompatibleRequestDefaults } from "@/lib/providers/requestDefaults";
-import { remapToolNamesInRequest } from "../services/claudeCodeToolRemapper.ts";
+import {
+  remapToolNamesInRequest,
+  stripClaudeCodeInternalMarkers,
+} from "../services/claudeCodeToolRemapper.ts";
 import { obfuscateInBody } from "../services/claudeCodeObfuscation.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -169,6 +173,77 @@ export function mergeAbortSignals(primary: AbortSignal, secondary: AbortSignal):
   primary.addEventListener("abort", () => abortFrom(primary), { once: true });
   secondary.addEventListener("abort", () => abortFrom(secondary), { once: true });
   return controller.signal;
+}
+
+/**
+ * Sanitize reasoning_effort for providers that don't accept all values.
+ *
+ * The claude→openai translator emits reasoning_effort=xhigh when the client
+ * sends output_config.effort=max on a Claude-shape request. Combined with
+ * runtime alias remapping (e.g. claude-opus-4-6 → mimo/mimo-v2.5-pro), this
+ * routes xhigh to OpenAI-shape providers that don't accept the value:
+ *
+ *   xiaomi-mimo : low|medium|high only — 400 literal_error on xhigh
+ *   mistral     : devstral models reject reasoning_effort entirely
+ *   github      : claude/haiku/oswe models reject reasoning_effort entirely
+ *
+ * Each rejection burns a combo fallback attempt before reaching a working
+ * provider. Apply provider-aware sanitation here (after transformRequest, so
+ * reintroductions by per-provider transforms are also caught) before fetch.
+ * Models that genuinely support xhigh (registry flag supportsXHighEffort)
+ * pass through unchanged.
+ */
+const MISTRAL_NO_REASONING_EFFORT_PATTERN = /devstral/i;
+const GITHUB_NO_REASONING_EFFORT_PATTERN = /(claude|haiku|oswe)/i;
+export function sanitizeReasoningEffortForProvider(
+  body: unknown,
+  provider: string,
+  model: string | undefined,
+  log?: { info?: (tag: string, msg: string) => void } | null
+): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const b = body as Record<string, unknown>;
+  const reasoning =
+    b.reasoning && typeof b.reasoning === "object" && !Array.isArray(b.reasoning)
+      ? (b.reasoning as Record<string, unknown>)
+      : null;
+  const effort = b.reasoning_effort ?? reasoning?.effort;
+  if (effort === undefined) return body;
+  const effortStr = typeof effort === "string" ? effort.toLowerCase() : "";
+  const modelStr = model || "";
+
+  if (effortStr === "xhigh" && !supportsXHighEffort(provider, modelStr)) {
+    log?.info?.(
+      "REASONING_SANITIZE",
+      `${provider}/${modelStr}: downgraded reasoning_effort xhigh → high`
+    );
+    const next: Record<string, unknown> = { ...b, reasoning_effort: "high" };
+    if (reasoning) {
+      next.reasoning = { ...reasoning, effort: "high" };
+    }
+    return next;
+  }
+
+  const rejecting =
+    (provider === "mistral" && MISTRAL_NO_REASONING_EFFORT_PATTERN.test(modelStr)) ||
+    (provider === "github" && GITHUB_NO_REASONING_EFFORT_PATTERN.test(modelStr));
+  if (rejecting) {
+    log?.info?.(
+      "REASONING_SANITIZE",
+      `${provider}/${modelStr}: removed unsupported reasoning_effort`
+    );
+    const next: Record<string, unknown> = { ...b };
+    delete next.reasoning_effort;
+    if (reasoning) {
+      const r = { ...reasoning };
+      delete r.effort;
+      if (Object.keys(r).length === 0) delete next.reasoning;
+      else next.reasoning = r;
+    }
+    return next;
+  }
+
+  return body;
 }
 
 /**
@@ -484,7 +559,18 @@ export class BaseExecutor {
         appendAnthropicBetaHeader(headers, CONTEXT_1M_BETA_HEADER);
       }
 
-      const transformedBody = await this.transformRequest(model, body, stream, activeCredentials);
+      const rawTransformedBody = await this.transformRequest(
+        model,
+        body,
+        stream,
+        activeCredentials
+      );
+      const transformedBody = sanitizeReasoningEffortForProvider(
+        rawTransformedBody,
+        this.provider,
+        model,
+        log
+      );
 
       try {
         // Only enforce the timeout while waiting for the initial fetch() response.
@@ -534,6 +620,7 @@ export class BaseExecutor {
           stripProxyToolPrefix(tb);
           remapToolNamesInRequest(tb);
           obfuscateInBody(tb);
+          stripClaudeCodeInternalMarkers(tb);
 
           // Real CLI never sets cache_control on tools.
           if (Array.isArray(tb.tools)) {
@@ -592,9 +679,22 @@ export class BaseExecutor {
             delete tb.context_management;
             appliedThinking = "off";
           } else if (!headerThinking && !headerEffort) {
-            // Default CC logic when no override headers are present
+            // Default CC logic when no override headers are present.
             const isHaiku = typeof tb.model === "string" && tb.model.includes("haiku");
             if (isHaiku) {
+              delete tb.thinking;
+              delete tb.output_config;
+              delete tb.context_management;
+            } else if (!isClaudeCodeClient && hasClaudeOAuthToken) {
+              // Capy/OpenAI-bridged traffic reaches the Claude OAuth path via the
+              // cloak (hasClaudeOAuthToken && !isClaudeCodeClient). Generic
+              // bridges sometimes attach Capy-style `thinking`/`output_config`/
+              // `context_management` that don't match the Claude Code wire image
+              // Anthropic now validates against (#2130-family body-shape
+              // enforcement). Auto-injecting CC defaults here also burns
+              // session-quota fast (#1761). Strip these for non-CC OAuth
+              // traffic; clients that genuinely want adaptive thinking can opt
+              // in via the `x-omniroute-thinking: adaptive` header.
               delete tb.thinking;
               delete tb.output_config;
               delete tb.context_management;
