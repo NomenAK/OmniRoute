@@ -544,6 +544,14 @@ export function openaiToAntigravityRequest(model, body, stream, credentials = nu
 
   const envelope = wrapInCloudCodeEnvelope(model, geminiCLI, credentials, true);
 
+  // Claude models on Antigravity use their own native thinking — Gemini's thinkingConfig
+  // is not understood by the Cloud Code Claude endpoint and must be stripped.
+  // applyAntigravityGenerationDefaults (inside wrapInCloudCodeEnvelope) already bumped
+  // maxOutputTokens to thinkingBudget+1 before we get here, so the budget is preserved.
+  if (isClaude && envelope.request?.generationConfig) {
+    delete envelope.request.generationConfig.thinkingConfig;
+  }
+
   // Match real Antigravity client: don't send maxOutputTokens when the user
   // hasn't explicitly specified max_tokens / max_completion_tokens.
   // The Cloud Code server decides the output limit on its own.
