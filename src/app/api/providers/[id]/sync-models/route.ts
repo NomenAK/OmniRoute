@@ -283,7 +283,7 @@ export async function selfFetchWithRetry(
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const res = await f(url, { method: "GET", cache: "no-store" });
+      const res = await f(url, { method: "GET" });
       // Any HTTP response (2xx, 4xx, 5xx) means the server is up — return as-is.
       // We only retry on network-level failures (ECONNREFUSED, "fetch failed")
       // which indicate the loopback listener is not yet accepting connections.
