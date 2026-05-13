@@ -243,29 +243,48 @@ async function patchedFetch(input: RequestInfo | URL, options: FetchWithDispatch
     }
     // Direct connection (no proxy) — use undici with custom dispatcher for timeout control.
     // Falls back to original native fetch if dispatcher initialization fails (#1054).
-    try {
-      return await (undiciFetch as unknown as (...args: unknown[]) => Promise<Response>)(input, {
-        ...options,
-        dispatcher: getDefaultDispatcher(),
-      });
-    } catch (dispatcherError) {
-      const msg =
-        dispatcherError instanceof Error ? dispatcherError.message : String(dispatcherError);
-      // CAUTION: Do NOT fallback to native fetch if the error is a version mismatch (invalid onRequestStart)
-      // because the native fetch will definitely fail with the undici v8 dispatcher.
-      if (msg.includes("onRequestStart")) {
-        console.error(
-          `[ProxyFetch] Fatal version mismatch: Dispatcher (v8) vs Fetch (v6/native). Hardware upgrade or SOCKS5 config isolation required. Error: ${msg}`
-        );
+    // Retries once on transient dispatcher errors before falling back (fix: proxyfetch-undici-retry).
+    let lastDispatcherError: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await (undiciFetch as unknown as (...args: unknown[]) => Promise<Response>)(input, {
+          ...options,
+          dispatcher: getDefaultDispatcher(),
+        });
+      } catch (dispatcherError) {
+        const msg =
+          dispatcherError instanceof Error ? dispatcherError.message : String(dispatcherError);
+        // CAUTION: Do NOT fallback to native fetch if the error is a version mismatch (invalid onRequestStart)
+        // because the native fetch will definitely fail with the undici v8 dispatcher.
+        if (msg.includes("onRequestStart")) {
+          console.error(
+            `[ProxyFetch] Fatal version mismatch: Dispatcher (v8) vs Fetch (v6/native). Hardware upgrade or SOCKS5 config isolation required. Error: ${msg}`
+          );
+          throw dispatcherError;
+        }
+        // Only retry/fallback for connection/dispatcher errors, not HTTP errors
+        if (
+          msg.includes("fetch failed") ||
+          msg.includes("ECONNREFUSED") ||
+          msg.includes("UND_ERR")
+        ) {
+          if (attempt === 0) {
+            // First failure — retry once with a short jittered delay before giving up.
+            lastDispatcherError = dispatcherError;
+            await new Promise((r) => setTimeout(r, 25 + Math.random() * 50));
+            continue;
+          }
+          // Second failure — fall back to native fetch.
+          console.warn(
+            `[ProxyFetch] Undici dispatcher failed after retry, falling back to native fetch: ${msg}`
+          );
+          return originalFetchWithDispatcher(input, options);
+        }
         throw dispatcherError;
       }
-      // Only fallback for connection/dispatcher errors, not HTTP errors
-      if (msg.includes("fetch failed") || msg.includes("ECONNREFUSED") || msg.includes("UND_ERR")) {
-        console.warn(`[ProxyFetch] Undici dispatcher failed, falling back to native fetch: ${msg}`);
-        return originalFetchWithDispatcher(input, options);
-      }
-      throw dispatcherError;
     }
+    // Should not be reached, but satisfy TypeScript control-flow.
+    throw lastDispatcherError;
   }
 
   try {
