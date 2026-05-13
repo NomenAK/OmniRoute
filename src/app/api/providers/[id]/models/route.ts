@@ -22,7 +22,10 @@ import { getProviderOutboundGuard } from "@/shared/network/outboundUrlGuard";
 import { getStaticQoderModels } from "@omniroute/open-sse/services/qoderCli.ts";
 import { getAntigravityHeaders } from "@omniroute/open-sse/services/antigravityHeaders.ts";
 import { ensureAntigravityProjectAssigned } from "@omniroute/open-sse/services/antigravityProjectBootstrap.ts";
-import { getAntigravityModelsDiscoveryUrls } from "@omniroute/open-sse/config/antigravityUpstream.ts";
+import {
+  getAntigravityModelsDiscoveryUrls,
+  getAntigravityFetchAvailableModelsUrls,
+} from "@omniroute/open-sse/config/antigravityUpstream.ts";
 import {
   buildGlmCodingHeaders,
   buildGlmModelsUrl,
@@ -232,7 +235,10 @@ async function fetchAntigravityDiscoveryModelsCached(
     await resolveAntigravityVersion();
     await ensureAntigravityProjectAssigned(accessToken);
 
-    for (const discoveryUrl of getAntigravityModelsDiscoveryUrls()) {
+    for (const discoveryUrl of [
+      ...getAntigravityFetchAvailableModelsUrls(),
+      ...getAntigravityModelsDiscoveryUrls(),
+    ]) {
       try {
         const response = await safeOutboundFetch(discoveryUrl, {
           ...SAFE_OUTBOUND_FETCH_PRESETS.modelsDiscovery,
