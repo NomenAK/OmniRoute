@@ -965,8 +965,15 @@ test("model sync route falls back to in-process discovery when internal self-fet
     availableModels.map((model) => ({ id: model.id, source: model.source })),
     [{ id: "aio-model", source: "imported" }]
   );
-  assert.deepEqual(fetchCalls, [
-    `http://localhost/api/providers/${connection.id}/models?refresh=true`,
-    "https://api.bltcy.ai/v1/models",
-  ]);
+  // selfFetchWithRetry default maxRetries=5: all 5 attempts throw, then in-process
+  // fallback fires (which triggers the upstream bltcy.ai fetch). So fetchCalls
+  // contains 5 self-fetch URLs followed by 1 upstream URL.
+  const selfFetchUrl = `http://localhost/api/providers/${connection.id}/models?refresh=true`;
+  assert.equal(
+    fetchCalls.slice(0, 5).every((u) => u === selfFetchUrl),
+    true,
+    "first 5 calls should be self-fetch retries"
+  );
+  assert.equal(fetchCalls[5], "https://api.bltcy.ai/v1/models", "6th call should be upstream");
+  assert.equal(fetchCalls.length, 6, "should have exactly 5 retries + 1 upstream call");
 });
