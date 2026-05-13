@@ -154,6 +154,86 @@ function getModelSyncChannelLabel(connection: unknown) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// selfFetchWithRetry — exported for unit testing
+// ---------------------------------------------------------------------------
+
+export type SelfFetchWithRetryOptions = {
+  /** Injectable fetch implementation; defaults to global fetch. */
+  fetch?: typeof fetch;
+  /** Maximum number of HTTP attempts before falling back. Default: 5. */
+  maxRetries?: number;
+  /**
+   * Base backoff in ms. Each attempt waits backoffMs * (attempt + 1) before
+   * the next try (linear growth: 200 ms, 400 ms, 600 ms, ... at default 200 ms).
+   * Default: 200.
+   */
+  backoffMs?: number;
+  /** Connection ID used only for the warning log message. Optional. */
+  connectionId?: string;
+  /**
+   * Called as last-resort fallback after all retries are exhausted.
+   * Must return a Response. If omitted, returns a synthetic 503.
+   */
+  inProcessFallback?: () => Promise<Response>;
+};
+
+/**
+ * Wraps a single loopback self-fetch URL with linear-backoff retry logic.
+ *
+ * Motivation: at container boot, ModelSync fires up to 17 concurrent
+ * self-fetches against http://127.0.0.1:PORT before the in-process HTTP
+ * listener is fully accepting connections. The previous single-attempt contract
+ * produced one warning per connection per boot. With retry, the fetch succeeds
+ * once the listener is up (usually within the first 1-2 attempts after a short
+ * delay) and falls back to the in-process route only if all retries fail.
+ *
+ * Retry contract:
+ * - Network errors (fetch failed, ECONNREFUSED): always retry.
+ * - HTTP 5xx: treated as transient — retry.
+ * - HTTP 4xx: treated as definitive — skip remaining retries and fall back.
+ * - HTTP 2xx: success — return immediately.
+ */
+export async function selfFetchWithRetry(
+  url: string,
+  opts: SelfFetchWithRetryOptions = {}
+): Promise<Response> {
+  const f = opts.fetch ?? fetch;
+  const maxRetries = opts.maxRetries ?? 5;
+  const backoffMs = opts.backoffMs ?? 200;
+  const connLabel = opts.connectionId ? opts.connectionId.slice(0, 8) : url.slice(-8);
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const res = await f(url, { method: "GET", cache: "no-store" });
+      // Any HTTP response (2xx, 4xx, 5xx) means the server is up — return as-is.
+      // We only retry on network-level failures (ECONNREFUSED, "fetch failed")
+      // which indicate the loopback listener is not yet accepting connections.
+      return res;
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < maxRetries - 1) {
+      await new Promise<void>((r) => setTimeout(r, backoffMs * (attempt + 1)));
+    }
+  }
+
+  // All retries exhausted (or 4xx short-circuit) — fall back to in-process route
+  console.warn(
+    `[ModelSync] Internal /models self-fetch failed for ${connLabel} after ${maxRetries} attempt(s); falling back to in-process route (last err: ${String(lastErr)})`
+  );
+
+  if (opts.inProcessFallback) {
+    return opts.inProcessFallback();
+  }
+  return new Response(JSON.stringify({ error: "self-fetch unavailable" }), { status: 503 });
+}
+
+// ---------------------------------------------------------------------------
+// fetchProviderModelsForSync — private orchestrator (uses selfFetchWithRetry)
+// ---------------------------------------------------------------------------
+
 async function fetchProviderModelsForSync(request: Request, connectionId: string) {
   // Construct a safe localhost URL from the incoming request's origin.
   // The route only accepts authenticated or internal-scheduler requests,
@@ -169,29 +249,24 @@ async function fetchProviderModelsForSync(request: Request, connectionId: string
     ...buildModelSyncInternalHeaders(),
   };
 
-  try {
-    return await fetch(new URL(modelsPath, safeOrigin).href, {
-      method: "GET",
-      cache: "no-store",
-      headers,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(
-      `[ModelSync] Internal /models self-fetch failed for ${connectionId.slice(
-        0,
-        8
-      )}; falling back to in-process route: ${message}`
-    );
+  const targetUrl = new URL(modelsPath, safeOrigin).href;
 
-    return getProviderModels(
-      new Request(new URL(modelsPath, "http://localhost").href, {
-        method: "GET",
-        headers,
-      }),
-      { params: { id: connectionId } }
-    );
-  }
+  // Wrap fetch so it forwards the required headers on every retry attempt.
+  const fetchWithHeaders: typeof fetch = (input, init) =>
+    fetch(input as string, { ...init, headers });
+
+  return selfFetchWithRetry(targetUrl, {
+    fetch: fetchWithHeaders,
+    connectionId,
+    inProcessFallback: () =>
+      getProviderModels(
+        new Request(new URL(modelsPath, "http://localhost").href, {
+          method: "GET",
+          headers,
+        }),
+        { params: { id: connectionId } }
+      ),
+  });
 }
 
 /**
