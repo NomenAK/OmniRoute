@@ -155,6 +155,57 @@ function getModelSyncChannelLabel(connection: unknown) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared loopback readiness gate — eliminates 17× retry amplification at boot
+// ---------------------------------------------------------------------------
+
+// Module-level shared promise: gates all selfFetchWithRetry callers behind a
+// single readiness probe. The 17 connections that fire ModelSync at boot all
+// await the same promise; the underlying HTTP probe runs exactly once per
+// process. Resolves on first HTTP response (any status — even 4xx confirms the
+// server is up); rejects only if maxWaitMs elapses with consistent network
+// errors.
+let __loopbackReadyPromise: Promise<void> | null = null;
+
+export type EnsureReadyOptions = {
+  fetch?: typeof fetch;
+  maxWaitMs?: number;
+  pollMs?: number;
+};
+
+export async function ensureLoopbackServerReady(opts: EnsureReadyOptions = {}): Promise<void> {
+  if (__loopbackReadyPromise) return __loopbackReadyPromise;
+  __loopbackReadyPromise = (async () => {
+    const f = opts.fetch ?? fetch;
+    const maxWaitMs = opts.maxWaitMs ?? 30_000;
+    const pollMs = opts.pollMs ?? 250;
+    const deadline = Date.now() + maxWaitMs;
+    let lastErr: unknown;
+    while (Date.now() < deadline) {
+      try {
+        // Hit a stable endpoint; any HTTP status (200/404/etc) confirms
+        // readiness — we only care that the dispatcher succeeds (no
+        // ECONNREFUSED). Using a synthetic connection id so no real DB lookup
+        // is needed; the 404 is sufficient proof the server is dispatching.
+        const res = await f("http://127.0.0.1:20128/api/providers/__readiness_probe__/models", {
+          signal: AbortSignal.timeout(2_000),
+        });
+        if (res.status >= 200 && res.status < 600) return;
+      } catch (err) {
+        lastErr = err;
+      }
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+    throw new Error(`loopback server not ready within ${maxWaitMs}ms: ${String(lastErr)}`);
+  })();
+  return __loopbackReadyPromise;
+}
+
+/** Test helper: reset the cached promise so tests can re-exercise the probe. */
+export function __resetLoopbackReadinessForTests(): void {
+  __loopbackReadyPromise = null;
+}
+
+// ---------------------------------------------------------------------------
 // selfFetchWithRetry — exported for unit testing
 // ---------------------------------------------------------------------------
 
@@ -176,6 +227,12 @@ export type SelfFetchWithRetryOptions = {
    * Must return a Response. If omitted, returns a synthetic 503.
    */
   inProcessFallback?: () => Promise<Response>;
+  /**
+   * Skip the shared readiness gate. Use in tests that exercise the retry
+   * loop in isolation without needing a live loopback server.
+   * Default: false.
+   */
+  skipReadinessGate?: boolean;
 };
 
 /**
@@ -183,10 +240,10 @@ export type SelfFetchWithRetryOptions = {
  *
  * Motivation: at container boot, ModelSync fires up to 17 concurrent
  * self-fetches against http://127.0.0.1:PORT before the in-process HTTP
- * listener is fully accepting connections. The previous single-attempt contract
- * produced one warning per connection per boot. With retry, the fetch succeeds
- * once the listener is up (usually within the first 1-2 attempts after a short
- * delay) and falls back to the in-process route only if all retries fail.
+ * listener is fully accepting connections. A shared readiness gate
+ * (ensureLoopbackServerReady) now serialises the boot race — all 17 callers
+ * await the same promise, so only one probe sequence runs. Retries here are
+ * a last-resort for transient failures AFTER the server is confirmed up.
  *
  * Retry contract:
  * - Network errors (fetch failed, ECONNREFUSED): always retry.
@@ -199,9 +256,29 @@ export async function selfFetchWithRetry(
   opts: SelfFetchWithRetryOptions = {}
 ): Promise<Response> {
   const f = opts.fetch ?? fetch;
-  const maxRetries = opts.maxRetries ?? 5;
+  // Reduced from 5 to 3: the readiness gate now handles the boot race.
+  // Retries here are only for transient failures after server is confirmed up.
+  const maxRetries = opts.maxRetries ?? 3;
   const backoffMs = opts.backoffMs ?? 200;
   const connLabel = opts.connectionId ? opts.connectionId.slice(0, 8) : url.slice(-8);
+
+  // Wait for the loopback server to be ready before firing. All concurrent
+  // callers share the same readiness promise — exactly ONE probe runs per
+  // process, eliminating the 17× retry amplification observed at boot.
+  if (opts.skipReadinessGate !== true) {
+    try {
+      await ensureLoopbackServerReady({ fetch: f });
+    } catch (err) {
+      // Readiness probe timed out — fall straight through to in-process fallback.
+      console.warn(
+        `[ModelSync] Loopback server readiness probe failed; falling back to in-process route immediately (${connLabel}): ${String(err)}`
+      );
+      if (opts.inProcessFallback) {
+        return opts.inProcessFallback();
+      }
+      return new Response(JSON.stringify({ error: "self-fetch unavailable" }), { status: 503 });
+    }
+  }
 
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
