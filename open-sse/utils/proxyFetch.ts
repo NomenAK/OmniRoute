@@ -27,7 +27,7 @@ type FetchWithDispatcher = (
 
 /** Injectable dependencies for testability (Approach B DI). */
 export type ProxyFetchDeps = {
-  undiciFetch?: (...args: unknown[]) => Promise<Response>;
+  undiciFetch?: FetchWithDispatcher;
   nativeFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 };
 
@@ -290,10 +290,16 @@ async function patchedFetch(
           );
           throw dispatcherError;
         }
-        // Only retry/fallback for connection/dispatcher errors, not HTTP errors
+        // Only retry/fallback for connection/dispatcher errors, not HTTP errors.
+        // Prefer the .code property when available (more stable across undici
+        // versions than message-string matching); fall back to substring match
+        // for errors that lack a structured code.
+        const errCode = (dispatcherError as { code?: string })?.code;
         if (
           msg.includes("fetch failed") ||
+          errCode === "ECONNREFUSED" ||
           msg.includes("ECONNREFUSED") ||
+          (errCode !== undefined && errCode.startsWith("UND_ERR")) ||
           msg.includes("UND_ERR")
         ) {
           if (attempt === 0 && maxAttempts > 1) {

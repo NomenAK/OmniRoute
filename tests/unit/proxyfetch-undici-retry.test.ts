@@ -21,12 +21,18 @@ test("undici is called exactly twice then native fallback fires once (both undic
   let undiciCalls = 0;
   let nativeCalls = 0;
 
-  const mockUndici = async (..._args: unknown[]): Promise<Response> => {
+  const mockUndici = async (
+    _input: RequestInfo | URL,
+    _init?: RequestInit
+  ): Promise<Response> => {
     undiciCalls++;
     throw makeUndiciError("fetch failed");
   };
 
-  const mockNative = async (): Promise<Response> => {
+  const mockNative = async (
+    _input: RequestInfo | URL,
+    _init?: RequestInit
+  ): Promise<Response> => {
     nativeCalls++;
     return new Response("native-fallback-body", { status: 200 });
   };
@@ -34,7 +40,7 @@ test("undici is called exactly twice then native fallback fires once (both undic
   const res = await proxyFetch(
     "https://example.invalid/test",
     { method: "GET" },
-    { undiciFetch: mockUndici, nativeFetch: mockNative as any }
+    { undiciFetch: mockUndici, nativeFetch: mockNative }
   );
 
   assert.equal(undiciCalls, 2, "undici must be called exactly twice (initial + retry)");
@@ -50,7 +56,10 @@ test("retry-succeeds: undici fails once then succeeds, native fallback is NOT in
   let undiciCalls = 0;
   let nativeCalls = 0;
 
-  const mockUndici = async (..._args: unknown[]): Promise<Response> => {
+  const mockUndici = async (
+    _input: RequestInfo | URL,
+    _init?: RequestInit
+  ): Promise<Response> => {
     undiciCalls++;
     if (undiciCalls === 1) {
       throw makeUndiciError("fetch failed");
@@ -58,7 +67,10 @@ test("retry-succeeds: undici fails once then succeeds, native fallback is NOT in
     return new Response("undici-retry-success", { status: 200 });
   };
 
-  const mockNative = async (): Promise<Response> => {
+  const mockNative = async (
+    _input: RequestInfo | URL,
+    _init?: RequestInit
+  ): Promise<Response> => {
     nativeCalls++;
     return new Response("should-not-be-called", { status: 200 });
   };
@@ -66,7 +78,7 @@ test("retry-succeeds: undici fails once then succeeds, native fallback is NOT in
   const res = await proxyFetch(
     "https://example.invalid/test",
     { method: "GET" },
-    { undiciFetch: mockUndici, nativeFetch: mockNative as any }
+    { undiciFetch: mockUndici, nativeFetch: mockNative }
   );
 
   assert.equal(
@@ -82,12 +94,18 @@ test("does not retry when body is a ReadableStream (non-replayable body)", async
   let undiciCalls = 0;
   let nativeCalls = 0;
 
-  const mockUndici = async (..._args: unknown[]): Promise<Response> => {
+  const mockUndici = async (
+    _input: RequestInfo | URL,
+    _init?: RequestInit
+  ): Promise<Response> => {
     undiciCalls++;
     throw makeUndiciError("fetch failed");
   };
 
-  const mockNative = async (): Promise<Response> => {
+  const mockNative = async (
+    _input: RequestInfo | URL,
+    _init?: RequestInit
+  ): Promise<Response> => {
     nativeCalls++;
     return new Response("native-stream-fallback", { status: 200 });
   };
@@ -102,7 +120,7 @@ test("does not retry when body is a ReadableStream (non-replayable body)", async
   const res = await proxyFetch(
     "https://example.invalid/test",
     { method: "POST", body: stream },
-    { undiciFetch: mockUndici, nativeFetch: mockNative as any }
+    { undiciFetch: mockUndici, nativeFetch: mockNative }
   );
 
   assert.equal(
