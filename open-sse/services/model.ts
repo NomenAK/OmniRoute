@@ -62,6 +62,12 @@ const PROVIDER_MODEL_ALIASES: ProviderModelAliasMap = {
     "claude-sonnet-4-5": "claude-sonnet-4.5",
     "claude-haiku-4-5": "claude-haiku-4.5",
   },
+  // gpt-5.3-codex was Codex internal beta name for gpt-5.5 (public shipping name).
+  // cx/gpt-5.3-codex is aliased here so the provider-model alias applies when the cx
+  // prefix is given explicitly. Other prefixes (gh/, cu/) keep the literal model id.
+  codex: {
+    "gpt-5.3-codex": "gpt-5.5",
+  },
 };
 
 const CROSS_PROXY_MODEL_ALIASES: Record<string, string> = {
@@ -79,6 +85,17 @@ const CROSS_PROXY_MODEL_ALIASES_LOWER = Object.fromEntries(
     canonical,
   ])
 );
+
+// Bare model names forced to a specific provider/model in the bare alias resolution path.
+// Unlike CROSS_PROXY_MODEL_ALIASES (applied for all paths including provider-prefixed),
+// BARE_PROVIDER_MODEL_OVERRIDES is checked only when isAlias=true, ensuring gh/ and cu/
+// prefixes are not affected.
+const BARE_PROVIDER_MODEL_OVERRIDES: Record<string, { provider: string; model: string }> = {
+  // gpt-5.3-codex was Codex internal beta name for gpt-5.5 (public shipping name).
+  // Bare form hit "Ambiguous model" errors (candidates: cx, gh, cu) on 2026-05-12.
+  // User decision: bare gpt-5.3-codex -> cx/gpt-5.5 (codex provider, no ambiguity).
+  "gpt-5.3-codex": { provider: "codex", model: "gpt-5.5" },
+};
 
 // Reverse index: modelId -> providerIds that expose this model
 const MODEL_TO_PROVIDERS = new Map<string, string[]>();
@@ -533,6 +550,12 @@ export async function getModelInfoCore(
         };
       }
     }
+  }
+
+  // Bare-form provider overrides: short-circuit ambiguous multi-provider models
+  if (parsed.model && BARE_PROVIDER_MODEL_OVERRIDES[parsed.model]) {
+    const override = BARE_PROVIDER_MODEL_OVERRIDES[parsed.model];
+    return { provider: override.provider, model: override.model, extendedContext };
   }
 
   const normalizedModelId = normalizeCrossProxyModelId(parsed.model).modelId;
