@@ -4524,7 +4524,8 @@
     "cliproxyapiNotDetected": "Not detected",
     "payloadRulesTitle": "Payload Rules",
     "modelCooldownsTitle": "Models in cooldown",
-    "modelCooldownsEmpty": "No models in cooldown right now."
+    "modelCooldownsEmpty": "No models in cooldown right now.",
+    "update": "Update"
   },
   "contextRtk": {
     "title": "RTK Engine",
