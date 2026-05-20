@@ -605,6 +605,14 @@ export const updateSettingsSchema = z.object({
   mcpEnabled: z.boolean().optional(),
   a2aEnabled: z.boolean().optional(),
   wsAuth: z.boolean().optional(),
+
+  // Qdrant integration
+  qdrantEnabled: z.boolean().optional(),
+  qdrantHost: z.string().max(500).optional(),
+  qdrantPort: z.number().int().min(1).max(65535).optional(),
+  qdrantApiKey: z.string().max(500).optional(),
+  qdrantCollection: z.string().max(200).optional(),
+  qdrantEmbeddingModel: z.string().max(200).optional(),
 });
 
 // ──── Auth Schemas ────
