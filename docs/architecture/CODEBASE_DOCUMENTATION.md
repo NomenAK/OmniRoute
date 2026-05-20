@@ -411,7 +411,7 @@ open-sse/
 ├── types.d.ts
 ├── config/                 Provider registries, header profiles, identity, …
 ├── handlers/               Request handlers (chat, embeddings, audio, image, …)
-├── executors/              31 provider-specific HTTP executors
+├── executors/              38 provider-specific HTTP executors
 ├── translator/             Format conversion (OpenAI ↔ Claude ↔ Gemini ↔ Cursor ↔ Kiro)
 ├── transformer/            Responses API ↔ Chat Completions stream transformer
 ├── services/               80+ service modules (combos, fallback, quotas, identity, …)
@@ -441,7 +441,7 @@ open-sse/
 
 ### 4.2 `open-sse/executors/`
 
-31 provider executors, each extending `BaseExecutor` (`base.ts`):
+38 provider executors, each extending `BaseExecutor` (`base.ts`):
 
 `antigravity`, `azure-openai`, `blackbox-web`, `chatgpt-web`, `cliproxyapi`,
 `cloudflare-ai`, `codex`, `commandCode`, `cursor`, `default`, `devin-cli`,
@@ -568,23 +568,22 @@ bin/
 ├── omniroute.mjs           Main CLI entry (Node ESM)
 ├── reset-password.mjs      Reset the management password from CLI
 ├── mcp-server.mjs          MCP server launcher (stdio)
-├── cli-commands.mjs        Command dispatcher
 ├── nodeRuntimeSupport.mjs  Node version guard
 └── cli/
-    ├── index.mjs
-    ├── args.mjs
+    ├── program.mjs         Commander program builder
+    ├── runtime.mjs         withRuntime helper (server-first/db-fallback)
+    ├── output.mjs          Output formatters (json/jsonl/table/csv)
+    ├── i18n.mjs            t() helper with locales
+    ├── api.mjs             API fetch helper
     ├── data-dir.mjs
     ├── encryption.mjs
-    ├── io.mjs
-    ├── provider-catalog.mjs
-    ├── provider-store.mjs
-    ├── provider-test.mjs
-    ├── settings-store.mjs
     ├── sqlite.mjs
     └── commands/
+        ├── registry.mjs    Command registration
         ├── setup.mjs
         ├── doctor.mjs
-        └── providers.mjs
+        ├── providers.mjs
+        └── ...             (one file per command/group)
 ```
 
 Two binaries are exposed in `package.json` → `bin`:

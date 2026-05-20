@@ -105,6 +105,18 @@ test("validateCommandCodeProvider ignores caller baseUrl and chatPath overrides"
   assert.equal(result.valid, true);
 });
 
+test("validateCommandCodeProvider defaults probe model to DeepSeek flash", async () => {
+  globalThis.fetch = async (_url, init = {}) => {
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.params.model, "deepseek/deepseek-v4-flash");
+    return new Response("", { status: 400 });
+  };
+
+  const result = await validateCommandCodeProvider({ apiKey: "cc-key" });
+
+  assert.deepEqual(result, { valid: true, error: null });
+});
+
 test("specialty providers surface network failures and non-auth upstream failures", async () => {
   globalThis.fetch = async (url) => {
     const target = String(url);
@@ -851,21 +863,28 @@ test("local OpenAI-style providers validate without sending Authorization when a
       provider: "lemonade",
       providerSpecificData: { baseUrl: "http://localhost:13305/api/v1" },
     });
+    const llamaCpp = await validateProviderApiKey({
+      provider: "llama-cpp",
+      providerSpecificData: { baseUrl: "http://127.0.0.1:8080/v1" },
+    });
 
     assert.equal(lmStudio.valid, true);
     assert.equal(vllm.valid, true);
     assert.equal(lemonade.valid, true);
+    assert.equal(llamaCpp.valid, true);
     assert.deepEqual(
       calls.map((call) => call.url),
       [
         "http://localhost:1234/v1/models",
         "http://localhost:8000/v1/models",
         "http://localhost:13305/api/v1/models",
+        "http://127.0.0.1:8080/v1/models",
       ]
     );
     assert.equal(calls[0].headers.Authorization, undefined);
     assert.equal(calls[1].headers.Authorization, undefined);
     assert.equal(calls[2].headers.Authorization, undefined);
+    assert.equal(calls[3].headers.Authorization, undefined);
   } finally {
     if (originalAllowPrivateProviderUrls === undefined) {
       delete process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS;
@@ -1940,8 +1959,9 @@ test("validateCommandCodeProvider sends Command Code probe URL, headers, and wra
   assert.equal(typeof calls[0].headers["x-session-id"], "string");
   assert.equal(calls[0].body.config.environment, "external");
   assert.equal(calls[0].body.permissionMode, "standard");
+  assert.equal(calls[0].body.skills, "");
   assert.equal(calls[0].body.params.model, "gpt-5.4-mini");
-  assert.equal(calls[0].body.params.stream, false);
+  assert.equal(calls[0].body.params.stream, true);
   assert.equal(calls[0].body.params.max_tokens, 1);
 });
 
@@ -1967,4 +1987,13 @@ test("validateCommandCodeProvider rejects auth failures and provider outages", a
     valid: false,
     error: "Provider unavailable (500)",
   });
+});
+
+test("llama-cpp is classified as a self-hosted chat provider", async () => {
+  const { isSelfHostedChatProvider, isLocalProvider, providerAllowsOptionalApiKey } =
+    await import("../../src/shared/constants/providers.ts");
+
+  assert.equal(isSelfHostedChatProvider("llama-cpp"), true);
+  assert.equal(isLocalProvider("llama-cpp"), true);
+  assert.equal(providerAllowsOptionalApiKey("llama-cpp"), true);
 });

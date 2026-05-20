@@ -1,7 +1,8 @@
 import { HTTP_STATUS, FETCH_TIMEOUT_MS } from "../config/constants.ts";
 import { applyFingerprint, isCliCompatEnabled } from "../config/cliFingerprints.ts";
 import { supportsXHighEffort } from "../config/providerModels.ts";
-import { getRotatingApiKey } from "../services/apiKeyRotator.ts";
+import { getRotatingApiKey, getValidApiKey } from "../services/apiKeyRotator.ts";
+import type { KeyHealth } from "../services/apiKeyRotator.ts";
 import { getOpenAICompatibleType, isClaudeCodeCompatible } from "../services/provider.ts";
 import type { ProviderRequestDefaults } from "../services/providerRequestDefaults.ts";
 import { signRequestBody } from "../services/claudeCodeCCH.ts";
@@ -13,6 +14,12 @@ import {
 import { getClaudeCodeCompatibleRequestDefaults } from "@/lib/providers/requestDefaults";
 import { remapToolNamesInRequest } from "../services/claudeCodeToolRemapper.ts";
 import { obfuscateInBody } from "../services/claudeCodeObfuscation.ts";
+import { applySystemTransformPipeline, PROVIDER_CLAUDE } from "../services/systemTransforms.ts";
+import {
+  fixToolPairs,
+  fixToolAdjacency,
+  stripTrailingAssistantOrphanToolUse,
+} from "../services/contextManager.ts";
 import { randomUUID } from "node:crypto";
 import {
   CLAUDE_CODE_VERSION,
@@ -98,6 +105,8 @@ export type ExecuteInput = {
   clientHeaders?: Record<string, string> | null;
   /** Callback to persist tokens that are proactively refreshed during execution. */
   onCredentialsRefreshed?: (newCredentials: ProviderCredentials) => Promise<void> | void;
+  /** When true, skip the intra-URL 429 retry in execute() so the caller handles fallback. */
+  skipUpstreamRetry?: boolean;
 };
 
 export type CountTokensInput = {
@@ -312,7 +321,8 @@ export class BaseExecutor {
     credentials: ProviderCredentials,
     stream = true,
     clientHeaders?: Record<string, string> | null,
-    model?: string
+    model?: string,
+    health?: Record<string, KeyHealth>
   ): Record<string, string> {
     void clientHeaders;
     void model;
@@ -338,9 +348,18 @@ export class BaseExecutor {
       // T07: rotate between primary + extra API keys when extraApiKeys is configured
       const extraKeys =
         (credentials.providerSpecificData?.extraApiKeys as string[] | undefined) ?? [];
+      // Extract health directly from credentials for reliability across all call paths
+      const credentialsHealth =
+        health ??
+        (credentials.providerSpecificData?.apiKeyHealth as Record<string, KeyHealth> | undefined);
       const effectiveKey =
         extraKeys.length > 0 && credentials.connectionId
-          ? getRotatingApiKey(credentials.connectionId, credentials.apiKey, extraKeys)
+          ? getValidApiKey(
+              credentials.connectionId,
+              credentials.apiKey,
+              extraKeys,
+              credentialsHealth
+            ) || credentials.apiKey
           : credentials.apiKey;
       headers["Authorization"] = `Bearer ${effectiveKey}`;
     }
@@ -509,6 +528,7 @@ export class BaseExecutor {
     extendedContext,
     upstreamExtraHeaders,
     clientHeaders,
+    skipUpstreamRetry = false,
   }: ExecuteInput) {
     const fallbackCount = this.getFallbackCount();
     let lastError: unknown = null;
@@ -618,6 +638,15 @@ export class BaseExecutor {
           stripProxyToolPrefix(tb);
           remapToolNamesInRequest(tb);
           obfuscateInBody(tb);
+
+          // NOTE (issue #2260): This is the native `claude` provider OAuth path.
+          // It is intentionally NOT routed through applyCcBridgeTransformPipeline.
+          // The native OAuth path already prepends its own billing line + sentinel
+          // (see lines ~744-773 below, dayStamp-based, cc_entrypoint=cli, cch=00000
+          // placeholder, signed at body level). The CC bridge transforms DSL is
+          // wired into buildAndSignClaudeCodeRequest (claudeCodeCompatible.ts step 5b)
+          // which is the anthropic-compatible-cc-* relay path — a different,
+          // separately classified surface. Do not double-prepend here.
 
           // Real CLI never sets cache_control on tools.
           if (Array.isArray(tb.tools)) {
@@ -772,6 +801,22 @@ export class BaseExecutor {
           sysBlocks.unshift({ type: "text", text: billingLine }, { type: "text", text: SENTINEL });
           tb.system = sysBlocks;
 
+          // Run the configurable system-transforms pipeline for the native
+          // `claude` provider (issue #2260 / comment 4459544580). The default
+          // claude pipeline runs cosmetic ops only (Open WebUI paragraph
+          // anchors, identity-prefix paragraph drop, ZWJ obfuscation of
+          // sensitive words). It deliberately does NOT include
+          // `inject_billing_header` — billing + sentinel are already
+          // prepended above. Users can extend the pipeline via Settings UI.
+          {
+            const transformResult = applySystemTransformPipeline(PROVIDER_CLAUDE, tb);
+            if (transformResult.appliedOpKinds.length > 0) {
+              console.log(
+                `[SystemTransforms] claude-native: ${transformResult.appliedOpKinds.join(", ")}`
+              );
+            }
+          }
+
           if (!tb.metadata || typeof tb.metadata !== "object") tb.metadata = {};
           (tb.metadata as Record<string, unknown>).user_id = buildUserIdJson({
             deviceId,
@@ -830,6 +875,35 @@ export class BaseExecutor {
         // CLI fingerprint ordering — always-on for native Claude OAuth, opt-in
         // for other providers. Header + body field order is itself a fingerprint.
         let finalHeaders = headers;
+        // Strip internal sentinel fields set by remapToolNamesInRequest before
+        // serializing — Anthropic rejects unknown top-level fields (issue #2260).
+        delete (transformedBody as Record<string, unknown>)[
+          "_claudeCodeRequiresLowercaseToolNames"
+        ];
+        // Guard against orphan tool_use / tool_result pairs. Clients can ship
+        // truncated histories mid-tool-call which Anthropic rejects with
+        // `messages.N: tool_use ids were found without tool_result blocks
+        // immediately after: toolu_...`. fixToolPairs strips orphans, then
+        // stripTrailingAssistantOrphanToolUse catches the case where the
+        // request body itself ends on an unmatched assistant(tool_use) —
+        // invalid for an upstream-send turn since the body must end on a
+        // user message. Both are idempotent on clean histories.
+        {
+          const tb = transformedBody as Record<string, unknown>;
+          if (Array.isArray(tb?.messages)) {
+            const fixed = fixToolPairs(tb.messages as Record<string, unknown>[]);
+            // fixToolAdjacency enforces Claude's strict adjacency rule
+            // (tool_result must be in immediately next message).
+            // Only apply for Claude/Claude-compatible — OpenAI allows results
+            // spread across multiple subsequent messages.
+            const isClaude = this.provider === "claude" || isClaudeCodeCompatible(this.provider);
+            // For Claude, fixToolAdjacency may strip tool_use blocks whose
+            // tool_result isn't in the next message; re-run fixToolPairs to
+            // drop any tool_result orphaned by that strip (discussion #2410).
+            const adjacent = isClaude ? fixToolPairs(fixToolAdjacency(fixed)) : fixed;
+            tb.messages = stripTrailingAssistantOrphanToolUse(adjacent);
+          }
+        }
         let bodyString = JSON.stringify(transformedBody);
 
         const shouldFingerprint =
@@ -868,6 +942,7 @@ export class BaseExecutor {
 
         // Intra-URL retry: if 429 and we haven't exhausted per-URL retries, wait and retry the same URL
         if (
+          !skipUpstreamRetry &&
           response.status === HTTP_STATUS.RATE_LIMITED &&
           (retryAttemptsByUrl[urlIndex] ?? 0) < BaseExecutor.RETRY_CONFIG.maxAttempts
         ) {
@@ -882,7 +957,12 @@ export class BaseExecutor {
           continue;
         }
 
-        if (this.shouldRetry(response.status, urlIndex)) {
+        // T07: Handle 401 authentication errors — log and continue to fallback
+        if (response.status === 401 && credentials.connectionId && credentials.apiKey) {
+          log?.warn?.("AUTH", `401 on ${url} - API key may be invalid`);
+        }
+
+        if (!skipUpstreamRetry && this.shouldRetry(response.status, urlIndex)) {
           log?.debug?.("RETRY", `${response.status} on ${url}, trying fallback ${urlIndex + 1}`);
           lastStatus = response.status;
           continue;
@@ -896,7 +976,7 @@ export class BaseExecutor {
           log?.warn?.("TIMEOUT", `Fetch timeout after ${this.getTimeoutMs()}ms on ${url}`);
         }
         lastError = err;
-        if (urlIndex + 1 < fallbackCount) {
+        if (!skipUpstreamRetry && urlIndex + 1 < fallbackCount) {
           log?.debug?.("RETRY", `Error on ${url}, trying fallback ${urlIndex + 1}`);
           continue;
         }
