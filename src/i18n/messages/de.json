@@ -3970,7 +3970,14 @@
     "codexFastTierTitle": "Codex Fast Tier",
     "codexFastTierDesc": "service_tier=priority global für OpenAI Codex-Anfragen einfügen.",
     "codexFastTierHint": "Wenn aktiviert, fügt OmniRoute ausgehenden Codex-Anfragen service_tier=priority hinzu, sofern für die Verbindung noch kein Tier festgelegt ist. Der Priority-Tier erfordert einen OpenAI Enterprise API-Schlüssel oder den ChatGPT-Auth-Codex-Pfad; andere Schlüsseltypen erhalten von OpenAI einen tier-bezogenen Fehler. Pro-Verbindung-Einstellungen auf der Codex-Provider-Seite haben Vorrang.",
-    "codexFastTierSaveError": "Codex Fast Tier-Einstellung konnte nicht aktualisiert werden"
+    "codexFastTierSaveError": "Codex Fast Tier-Einstellung konnte nicht aktualisiert werden",
+    "codexFastTierTierLabel": "Tier",
+    "codexFastTierTierDefault": "Standard (keine Überschreibung)",
+    "codexFastTierTierPriority": "Priority (Fast)",
+    "codexFastTierTierFlex": "Flex",
+    "codexFastTierModelsLabel": "Angewendet auf Modelle",
+    "codexFastTierModelsHint": "Wird nur wirksam, wenn das Zielmodell der Anfrage in der ausgewählten Liste enthalten ist. Die Standardauswahl entspricht den von OpenAI als Fast-fähig markierten Codex-Modellen.",
+    "codexFastTierModelCheckbox": "Tier-Überschreibung auf {model} anwenden"
   },
   "contextRtk": {
     "title": "RTK Engine",

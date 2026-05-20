@@ -3970,7 +3970,14 @@
     "codexFastTierTitle": "Codex Fast Tier",
     "codexFastTierDesc": "Injecter globalement service_tier=priority pour les requêtes OpenAI Codex.",
     "codexFastTierHint": "Lorsqu'activé, OmniRoute ajoute service_tier=priority aux requêtes Codex sortantes pour les connexions qui n'ont pas déjà défini un tier. Le tier priority nécessite une clé API OpenAI Enterprise ou le chemin Codex avec authentification ChatGPT ; les autres types de clés recevront une erreur liée au tier de la part d'OpenAI. Les paramètres par connexion sur la page du provider Codex prévalent.",
-    "codexFastTierSaveError": "Échec de la mise à jour du paramètre Codex Fast Tier"
+    "codexFastTierSaveError": "Échec de la mise à jour du paramètre Codex Fast Tier",
+    "codexFastTierTierLabel": "Tier",
+    "codexFastTierTierDefault": "Par défaut (aucune surcharge)",
+    "codexFastTierTierPriority": "Priority (Fast)",
+    "codexFastTierTierFlex": "Flex",
+    "codexFastTierModelsLabel": "Appliqué aux modèles",
+    "codexFastTierModelsHint": "Prend effet uniquement lorsque le modèle cible de la requête figure dans la liste sélectionnée. La sélection par défaut correspond aux modèles Codex éligibles au tier Fast d'OpenAI.",
+    "codexFastTierModelCheckbox": "Appliquer la surcharge de tier à {model}"
   },
   "contextRtk": {
     "title": "RTK Engine",
