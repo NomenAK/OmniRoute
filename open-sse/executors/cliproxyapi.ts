@@ -201,7 +201,15 @@ export class CliproxyapiExecutor extends BaseExecutor {
     return false;
   }
 
-  private selectEndpoint(body: unknown): string {
+  private selectEndpoint(body: unknown, model?: string): string {
+    // Route Claude models to /v1/messages regardless of body structural shape.
+    // Minimal Anthropic SDK bodies (e.g. Capy's "Test" probe — string content,
+    // no top-level system/thinking, no metadata.user_id) fail isAnthropicShape's
+    // structural heuristics, so they would otherwise route to /v1/chat/completions
+    // and CPA would emit OpenAI-shape SSE — unparseable by Anthropic SDK clients.
+    if (typeof model === "string" && /^claude[-_]/i.test(model)) {
+      return "/v1/messages";
+    }
     return this.isAnthropicShape(body) ? "/v1/messages" : "/v1/chat/completions";
   }
 
@@ -300,7 +308,7 @@ export class CliproxyapiExecutor extends BaseExecutor {
     log?: any;
     upstreamExtraHeaders?: Record<string, string> | null;
   }) {
-    const endpoint = this.selectEndpoint(input.body);
+    const endpoint = this.selectEndpoint(input.body, input.model);
     const url = `${this.upstreamBaseUrl}${endpoint}`;
     const shape = endpoint === "/v1/messages" ? "anthropic" : "openai";
     const headers = this.buildHeaders(input.credentials, input.stream);
