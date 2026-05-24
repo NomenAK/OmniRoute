@@ -1,9 +1,7 @@
--- Migration 065: API Key Groups & Model Permissions
--- Enables team/enterprise key grouping with model-level access control.
+-- Migration 066: API Key Groups
+-- Tables for grouping API keys and managing usage limits at the group level.
 
-BEGIN TRANSACTION;
-
--- Key groups (logical grouping of API keys for team management)
+-- API Key Groups (logical grouping of API keys for team management)
 CREATE TABLE IF NOT EXISTS key_groups (
   id TEXT PRIMARY KEY NOT NULL,
   name TEXT NOT NULL,
@@ -47,4 +45,3 @@ CREATE INDEX IF NOT EXISTS idx_group_members_key
 CREATE INDEX IF NOT EXISTS idx_group_members_group
   ON key_group_members(group_id);
 
-COMMIT;

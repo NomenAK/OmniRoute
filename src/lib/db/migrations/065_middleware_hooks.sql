@@ -1,8 +1,6 @@
 -- Migration 064: Pre-request Middleware Hooks
 -- Tables for storing middleware hook configs and execution logs.
 
-BEGIN TRANSACTION;
-
 -- Hook configurations
 CREATE TABLE IF NOT EXISTS middleware_hooks (
   name TEXT PRIMARY KEY NOT NULL,
@@ -45,5 +43,3 @@ CREATE INDEX IF NOT EXISTS idx_middleware_logs_hook
 
 CREATE INDEX IF NOT EXISTS idx_middleware_logs_request
   ON middleware_logs(request_id, timestamp);
-
-COMMIT;
