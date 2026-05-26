@@ -9,7 +9,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ function getDbPath(): string | null {
   ];
 
   // Try to resolve from the project root
-  const __dirname = fileURLToPath(new URL(".", import.meta.url));
+  const __dirname = dirname(fileURLToPath(import.meta.url));
 
   // Walk up to find .codegraph/
   let dir = __dirname;
