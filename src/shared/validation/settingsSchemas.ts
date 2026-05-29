@@ -36,6 +36,9 @@ export const updateSettingsSchema = z.object({
   hideEndpointNgrokTunnel: z.boolean().optional(),
   autoRefreshProviderQuota: z.boolean().optional(),
   autoRefreshProviderQuotaInterval: z.number().int().min(10).max(3600).optional(),
+  pinProviderQuotaToHome: z.boolean().optional(),
+  showQuickStartOnHome: z.boolean().optional(),
+  showProviderTopologyOnHome: z.boolean().optional(),
   debugMode: z.boolean().optional(),
   hiddenSidebarItems: z.array(z.enum(HIDEABLE_SIDEBAR_ITEM_IDS)).optional(),
   sidebarSectionOrder: z
