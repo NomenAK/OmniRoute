@@ -28,10 +28,23 @@ for (const [id, alias] of Object.entries(PROVIDER_ID_TO_ALIAS)) {
   }
   ALIAS_TO_PROVIDER_ID[alias] = id;
 }
+// Manual alias overrides — maps slug-style prefixes to canonical provider IDs.
+// These live outside the registry because they represent multiple providers
+// or backward-compatible slug changes, not a single provider's display name.
+// opencode/ → opencode-zen (the main free/open tier; opencode-go is a separate paid tier)
+ALIAS_TO_PROVIDER_ID["opencode"] = "opencode-zen";
+
+// Manual aliases for external compatibility not covered by PROVIDER_ID_TO_ALIAS.
+// OpenCode's Zen provider now uses the "opencode" slug, but OmniRoute registers
+// it as "opencode-zen". This alias ensures `opencode/<model>` resolves correctly.
+ALIAS_TO_PROVIDER_ID["opencode"] = "opencode-zen";
 
 // Provider-scoped legacy model aliases. Used to normalize provider/model inputs
 // and keep backward compatibility when upstream IDs change.
 const PROVIDER_MODEL_ALIASES: ProviderModelAliasMap = {
+  openai: {
+    "gpt-4o-mini": "gpt-4o-mini",
+  },
   github: {
     "claude-4.5-opus": "claude-opus-4-5-20251101",
     "claude-opus-4.5": "claude-opus-4-5-20251101",
@@ -166,8 +179,13 @@ function hasKnownProviderModel(providerOrAlias: string | null | undefined, model
 
   if (models.some((entry) => entry?.id === modelId)) return true;
 
+  const aliases = PROVIDER_MODEL_ALIASES[providerId];
+  if (aliases && Object.prototype.hasOwnProperty.call(aliases, modelId)) return true;
+
   const canonicalModel = resolveProviderModelAlias(providerId, modelId);
-  return canonicalModel !== modelId && models.some((entry) => entry?.id === canonicalModel);
+  if (canonicalModel === modelId) return false;
+
+  return true;
 }
 
 function hasCodexPreferredUnprefixedModel(modelId: string) {
@@ -269,7 +287,11 @@ export function resolveCanonicalProviderModel(
  * Supports [1m] suffix for extended 1M context window (e.g. "claude-sonnet-4-6[1m]")
  */
 export function parseModel(modelStr: string | null | undefined): ParsedModel {
-  if (!modelStr) {
+  // Guard truthy non-strings (object/number/array), not just falsy values — a
+  // malformed combo `modelStr` or providerSpecificData saved as an object would
+  // otherwise reach `cleanStr.endsWith("[1m]")` and crash with
+  // `endsWith is not a function`. Same class as #2359 / #2463.
+  if (!modelStr || typeof modelStr !== "string") {
     return {
       provider: null,
       model: null,
@@ -406,6 +428,17 @@ async function resolveModelByProviderInference(modelId: string, extendedContext:
 
   const activeProviders = await getActiveProviderSet();
 
+  // Preserve historical behavior: OpenAI stays default when model exists there.
+  // Connection availability must not make unprefixed OpenAI models resolve to a
+  // different provider; callers can still force Codex with an explicit prefix.
+  if (providers.includes("openai")) {
+    return {
+      provider: "openai",
+      model: modelId,
+      extendedContext,
+    };
+  }
+
   if (
     activeProviders?.has("codex") &&
     !activeProviders.has("openai") &&
@@ -419,13 +452,8 @@ async function resolveModelByProviderInference(modelId: string, extendedContext:
     };
   }
 
-  // Preserve historical behavior: OpenAI stays default when model exists there
-  if (
-    providers.includes("openai") ||
-    /^gpt-/i.test(modelId) ||
-    /^o1/i.test(modelId) ||
-    /^o3/i.test(modelId)
-  ) {
+  // Fallback for newly released OpenAI-family model IDs that may not be in the local catalog yet.
+  if (/^gpt-/i.test(modelId) || /^o1/i.test(modelId) || /^o3/i.test(modelId)) {
     return {
       provider: "openai",
       model: modelId,
@@ -468,11 +496,17 @@ async function resolveModelByProviderInference(modelId: string, extendedContext:
     return { provider: "gemini", model: modelId, extendedContext };
   }
 
-  // Last resort: treat as openai model
+  // Last resort: no provider could be inferred — return a clear error instead
+  // of silently defaulting to "openai", which would produce a misleading
+  // "No credentials for provider: openai" response when the model name
+  // is unrecognised (e.g. a missing combo, a typo, or a bare model id
+  // that doesn't exist in any provider's catalog).
   return {
-    provider: "openai",
+    provider: null,
     model: modelId,
     extendedContext,
+    errorType: "model_not_found",
+    errorMessage: `Unable to determine provider for model '${modelId}'. Use a provider/model prefix (e.g. openai/${modelId}) or ensure the model is added as a combo entry.`,
   };
 }
 

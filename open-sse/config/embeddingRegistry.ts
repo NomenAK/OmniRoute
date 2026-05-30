@@ -45,7 +45,11 @@ export function buildDynamicEmbeddingProvider(node: EmbeddingProviderNodeRow): E
   };
 }
 
-export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
+let _EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> | null = null;
+
+function getOrCreateEmbeddingProviders(): Record<string, EmbeddingProvider> {
+  if (!_EMBEDDING_PROVIDERS) {
+    _EMBEDDING_PROVIDERS = {
   cohere: {
     id: "cohere",
     baseUrl: "https://api.cohere.com/v2/embed",
@@ -117,6 +121,11 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
     authHeader: "bearer",
     models: [
       { id: "nomic-ai/nomic-embed-text-v1.5", name: "Nomic Embed Text v1.5", dimensions: 768 },
+      {
+        id: "accounts/fireworks/models/qwen3-embedding-8b",
+        name: "Qwen3 Embedding 8B",
+        dimensions: 4096,
+      },
     ],
   },
 
@@ -189,6 +198,7 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
       { id: "voyage-4-large", name: "Voyage 4 Large", dimensions: 1024 },
       { id: "voyage-4", name: "Voyage 4", dimensions: 1024 },
       { id: "voyage-4-lite", name: "Voyage 4 Lite", dimensions: 1024 },
+      { id: "voyage-3-large", name: "Voyage 3 Large", dimensions: 1024 },
       { id: "voyage-multilingual-3.5", name: "Voyage Multilingual 3.5", dimensions: 1024 },
       { id: "voyage-code-3", name: "Voyage Code 3", dimensions: 1024 },
       { id: "voyage-code-2", name: "Voyage Code 2", dimensions: 1536 },
@@ -227,7 +237,50 @@ export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = {
       { id: "jina-colbert-v2", name: "Jina ColBERT v2", dimensions: 128 },
     ],
   },
-};
+  };
+  }
+  return _EMBEDDING_PROVIDERS;
+}
+
+export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProvider> = new Proxy({} as Record<string, EmbeddingProvider>, {
+  get(target, key: string) {
+    if (key in target) {
+      return target[key];
+    }
+    return getOrCreateEmbeddingProviders()[key];
+  },
+  set(target, key: string, value) {
+    target[key] = value;
+    getOrCreateEmbeddingProviders()[key] = value;
+    return true;
+  },
+  deleteProperty(target, key: string) {
+    delete target[key];
+    delete getOrCreateEmbeddingProviders()[key];
+    return true;
+  },
+  ownKeys(target) {
+    const targetKeys = Reflect.ownKeys(target);
+    const registryKeys = Reflect.ownKeys(getOrCreateEmbeddingProviders());
+    return Array.from(new Set([...targetKeys, ...registryKeys]));
+  },
+  has(target, key) {
+    return key in target || key in getOrCreateEmbeddingProviders();
+  },
+  getOwnPropertyDescriptor(target, key) {
+    if (key in target) {
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    }
+    if (key in getOrCreateEmbeddingProviders()) {
+      return { configurable: true, enumerable: true, value: getOrCreateEmbeddingProviders()[key as string] };
+    }
+    return undefined;
+  },
+});
+
+export function getEmbeddingProviders(): Record<string, EmbeddingProvider> {
+  return EMBEDDING_PROVIDERS;
+}
 
 const EMBEDDING_PROVIDER_ALIASES: Record<string, string> = {
   jina: "jina-ai",
@@ -322,7 +375,12 @@ export function parseEmbeddingModel(
  * Get all embedding models as a flat list
  */
 export function getAllEmbeddingModels() {
-  const models = [];
+  const models: Array<{
+    id: string;
+    name: string;
+    provider: string;
+    dimensions: number | undefined;
+  }> = [];
   for (const [providerId, config] of Object.entries(EMBEDDING_PROVIDERS)) {
     for (const model of config.models) {
       models.push({
