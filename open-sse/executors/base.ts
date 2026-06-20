@@ -28,6 +28,7 @@ import {
   enforceThinkingTemperature,
   modelSupportsContext1mBeta,
 } from "../services/claudeCodeCompatible.ts";
+import { isToolChoiceForced } from "../services/claudeCodeConstraints.ts";
 import { getClaudeCodeCompatibleRequestDefaults } from "@/lib/providers/requestDefaults";
 import {
   cloakThirdPartyToolNames,
@@ -939,17 +940,11 @@ export class BaseExecutor {
           }
 
           // Anthropic rejects `thinking` (enabled/adaptive) when tool_choice forces a
-          // specific tool ({type:"any"|"tool"}): "Thinking may not be enabled when
-          // tool_choice forces tool use". Treat forced tool_choice as an implicit
-          // `thinking: off` so neither the explicit-adaptive branch nor the default CC
-          // injection below produces the invalid combination (incl. client-sent thinking).
-          const toolChoiceForced =
-            tb.tool_choice === "any" ||
-            (typeof tb.tool_choice === "object" &&
-              tb.tool_choice !== null &&
-              ((tb.tool_choice as Record<string, unknown>).type === "any" ||
-                (tb.tool_choice as Record<string, unknown>).type === "tool"));
-          const effThinking = toolChoiceForced ? "off" : headerThinking;
+          // tool ("Thinking may not be enabled when tool_choice forces tool use"), so
+          // treat a forced tool_choice as an implicit `thinking: off` - neither the
+          // explicit-adaptive branch nor the default CC injection below then produces
+          // the invalid combination (covers client-sent thinking too).
+          const effThinking = isToolChoiceForced(tb) ? "off" : headerThinking;
           if (effThinking === "adaptive") {
             if (tb.thinking === undefined) {
               tb.thinking = { type: "adaptive" };

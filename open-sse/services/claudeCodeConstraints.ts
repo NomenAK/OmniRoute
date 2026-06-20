@@ -31,15 +31,18 @@ export function enforceThinkingTemperature(body: Record<string, unknown>): void 
   }
 }
 
-export function disableThinkingIfToolChoiceForced(body: Record<string, unknown>): void {
+export function isToolChoiceForced(body: Record<string, unknown>): boolean {
   const toolChoice = body.tool_choice as Record<string, unknown> | string | undefined;
-  if (!toolChoice) return;
+  if (!toolChoice) return false;
 
-  const isForced =
+  return (
     toolChoice === "any" ||
-    (typeof toolChoice === "object" && (toolChoice.type === "any" || toolChoice.type === "tool"));
+    (typeof toolChoice === "object" && (toolChoice.type === "any" || toolChoice.type === "tool"))
+  );
+}
 
-  if (isForced && body.thinking) {
+export function disableThinkingIfToolChoiceForced(body: Record<string, unknown>): void {
+  if (isToolChoiceForced(body) && body.thinking) {
     delete body.thinking;
     delete body.context_management;
   }
